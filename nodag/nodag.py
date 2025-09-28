@@ -1,11 +1,13 @@
 import numpy as np
 #from scipy.linalg import lu, solve_triangular, det, inv
 from numpy.linalg import LinAlgError, inv
-from MEC import is_in_markov_equiv_class
+from ..MEC import is_in_markov_equiv_class
 import SCM_data
 import MEC
-import os
-print(os.getcwd())
+import os, sys
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+sys.path.append(os.path.abspath(os.path.join(os.getcwd(), "..")))
+os.chdir("/home/yin/DAG")
 
 # Soft-thresholding operator for matrices
 def soft_threshold_matrix(A, threshold):
