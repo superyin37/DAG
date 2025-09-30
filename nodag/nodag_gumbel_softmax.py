@@ -70,10 +70,15 @@ class GumbelAdjacency(nn.Module):
             self.U = nn.Parameter(torch.log(abs_B / (1 - abs_B)))  # logit
             self.P = nn.Parameter(B_init.clone())  # 初始权重 = B_init 本身
         else:
-            # 默认初始化（原来写法）
-            A_init = torch.tensor(np.eye(d), dtype=dtype, device=self.device)
-            self.U = nn.Parameter(A_init.clone())
-            self.P = nn.Parameter(0.01 * torch.randn((d, d), dtype=dtype, device=self.device))
+            # ✅ 修改后的默认初始化
+            # U = 0 矩阵
+            self.U = nn.Parameter(torch.zeros((d, d), dtype=dtype, device=self.device))
+            # P ~ Uniform(-0.001, 0.001)
+            self.P = nn.Parameter(
+                (0.002 * torch.rand((d, d), dtype=dtype, device=self.device) - 0.001)
+            )
+            # τ 固定为 0.5
+            self.tau = 0.5
 
         # off-diagonal mask
         self.register_buffer("M_off_bool", offdiag_mask(d, self.device))
@@ -176,14 +181,19 @@ def train_gumbel_sgd(Rhat_np,
     with torch.no_grad():
         B_final, g_final = model(tau=tau_end, hard=False, deterministic=True)
         final_loss, final_logdet, final_trace, final_likelihood, final_penalty = loss_fn(B_final, Rhat, lam=lam, delta=delta, gates=g_final, return_terms=True)
-
+    
+    P_final = model.P.detach().cpu().numpy()
+    U_final = model.U.detach().cpu().numpy()
     G_final = weight_to_adjacency(B_final.detach().cpu().numpy(), 0.05) - np.eye(d)
+    np.fill_diagonal(G_final, 0)
 
     return B_final.detach().cpu().numpy(), G_final, {
         "history": history,
         "final_loss": float(final_loss.detach().cpu()),
         "final_likelihood": float(final_likelihood.detach().cpu()),
-        "final_penalty": float(final_penalty.detach().cpu())
+        "final_penalty": float(final_penalty.detach().cpu()),
+        "P_final": P_final,
+        "U_final": U_final
     }
 
 # ---------- demo ----------

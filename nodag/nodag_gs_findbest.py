@@ -11,7 +11,6 @@ from scipy.linalg import sqrtm
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), "..")))
-os.chdir("/home/yin/DAG")
 # print(os.getcwd())
 
 
@@ -60,10 +59,12 @@ def nodag_findbest_loss(R_hat, lam=0.5, delta=1e-6, max_steps=5000, tau_start=0.
             best_loss = info["final_loss"]
             best_likelihood = info["final_likelihood"]
             best_penalty = info["final_penalty"]
+            best_P = info["P_final"]
+            best_U = info["U_final"]
             best_seed = seed
             best_G = G_final
             best_B = B_final
-    return best_G, best_B, best_loss, best_likelihood, best_penalty, best_seed
+    return best_G, best_B, best_P, best_U, best_loss, best_likelihood, best_penalty, best_seed
 
 
 def nodag_findbest_likelihood_penalty(
@@ -91,6 +92,8 @@ def nodag_findbest_likelihood_penalty(
             "seed": seed,
             "G": G_final,
             "B": B_final,
+            "P": info["P_final"],
+            "U": info["U_final"],
             "loss": info["final_loss"],
             "likelihood": info["final_likelihood"],
             "penalty": info["final_penalty"],
@@ -107,6 +110,7 @@ def nodag_findbest_likelihood_penalty(
 
     return (
         best["G"], best["B"],
+        best["P"], best["U"],
         best["loss"], best["likelihood"],
         best["penalty"], best["seed"]
     )
@@ -120,10 +124,10 @@ def calculate_shd(est, true):
     return shd, est_cpdag, true_cpdag
 
 
-A = np.array([[0,0,0,0],[0,0,0,0],[0,0,0,1],[0,0,1,0]])
-B = np.array([[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,1,0]])
+# A = np.array([[0,0,0,0],[0,0,0,0],[0,0,0,1],[0,0,1,0]])
+# B = np.array([[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,1,0]])
 
-shd, est_cpdag, true_cpdag = calculate_shd(A,B)
-print(est_cpdag)
-print(true_cpdag)
-print(shd)
+# shd, est_cpdag, true_cpdag = calculate_shd(A,B)
+# print(est_cpdag)
+# print(true_cpdag)
+# print(shd)
