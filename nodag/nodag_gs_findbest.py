@@ -35,8 +35,43 @@ def adjacency_to_dag(G: np.ndarray) -> Dag:
                 dag.add_edge(edge)
     return dag
 
-
+import time
 def nodag_findbest_loss(R_hat, lam=0.5, delta=1e-6, max_steps=5000, tau_start=0.2, tau_end=0.2, times=100):
+    best_loss = np.inf
+    best_seed = 0
+    for t in range(times):
+        #start = time.time()
+        #print("seed",t)
+        # if t % (times // 10) == 0:
+        #     percent = int(t / times * 100)
+        #     print(f"Progress: {percent}%")
+        seed = t
+        np.random.seed(seed) 
+        B_init = np.random.randn(*R_hat.shape)
+        B_final,G_final, info = train_gumbel_sgd(
+            Rhat_np = R_hat,
+            lam = lam,
+            delta = delta,
+            max_steps = max_steps,
+            tau_start = tau_start,
+            tau_end = tau_end,
+            B_init = B_init
+            )
+        #print(f"Seed {t} took {time.time() - start:.2f}s, loss={info['final_loss']}")
+
+        if info["final_loss"] < best_loss:
+            best_loss = info["final_loss"]
+            best_likelihood = info["final_likelihood"]
+            best_penalty = info["final_penalty"]
+            best_P = info["P_final"]
+            best_U = info["U_final"]
+            best_seed = seed
+            best_G = G_final
+            best_B = B_final
+    return best_G, best_B, best_P, best_U, best_loss, best_likelihood, best_penalty, best_seed
+
+
+def nodag_findbest_loss_reg(R_hat, lam=0.5, delta=1e-6, max_steps=5000, tau_start=0.2, tau_end=0.2, times=100):
     best_loss = np.inf
     best_seed = 0
     for t in range(times):
@@ -46,7 +81,7 @@ def nodag_findbest_loss(R_hat, lam=0.5, delta=1e-6, max_steps=5000, tau_start=0.
         seed = t
         np.random.seed(seed) 
         B_init = np.random.randn(*R_hat.shape)
-        B_final,G_final, info = train_gumbel_sgd(
+        B_final,G_final, info = train_gs_reg(
             Rhat_np = R_hat,
             lam = lam,
             delta = delta,
@@ -65,6 +100,39 @@ def nodag_findbest_loss(R_hat, lam=0.5, delta=1e-6, max_steps=5000, tau_start=0.
             best_G = G_final
             best_B = B_final
     return best_G, best_B, best_P, best_U, best_loss, best_likelihood, best_penalty, best_seed
+
+
+def nodag_findbest_loss_reg_reset(R_hat, lam=0.5, delta=1e-6, max_steps=5000, tau_start=0.2, tau_end=0.2, times=100):
+    best_loss = np.inf
+    best_seed = 0
+    for t in range(times):
+        # if t % (times // 10) == 0:
+        #     percent = int(t / times * 100)
+        #     print(f"Progress: {percent}%")
+        seed = t
+        np.random.seed(seed) 
+        B_init = np.random.randn(*R_hat.shape)
+        B_final,G_final, info = train_gs_reg_reset(
+            Rhat_np = R_hat,
+            lam = lam,
+            delta = delta,
+            max_steps = max_steps,
+            tau_start = tau_start,
+            tau_end = tau_end,
+            B_init = B_init
+            )
+        if info["final_loss"] < best_loss:
+            best_loss = info["final_loss"]
+            best_likelihood = info["final_likelihood"]
+            best_penalty = info["final_penalty"]
+            best_P = info["P_final"]
+            best_U = info["U_final"]
+            best_seed = seed
+            best_G = G_final
+            best_B = B_final
+    return best_G, best_B, best_P, best_U, best_loss, best_likelihood, best_penalty, best_seed
+
+
 
 
 def nodag_findbest_likelihood_penalty(

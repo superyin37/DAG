@@ -127,7 +127,7 @@ def loss_fn(B, Rhat, lam=1e-2, delta=0, gates=None, return_terms=False):
 # ---------- training (SGD) ----------
 def train_gumbel_sgd(Rhat_np,
                      lam=1e-2,
-                     delta=0,
+                     delta=1e-6,
                      max_steps=1000,
                      lr=1e-2,
                      momentum=0.9,
@@ -177,6 +177,10 @@ def train_gumbel_sgd(Rhat_np,
                                 float(likelihood.detach().cpu()),
                                 float(penalty.detach().cpu()),
                                 sparsity))
+        if torch.isnan(loss):
+            print("NaN at step", t, "loss =", loss.item())
+            print("Current B =", B.detach().cpu().numpy())
+            break
 
     with torch.no_grad():
         B_final, g_final = model(tau=tau_end, hard=False, deterministic=True)
