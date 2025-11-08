@@ -2,7 +2,8 @@ import sys, os
 import torch
 import torch.nn as nn
 from torch.optim import Adam, LBFGS
-from nodag.nodag_gumbel_softmax import train_gumbel_sgd
+from nodag.nodag_gumbel_softmax import train_gs_clamp, train_gumbel_sgd, train_gs_reg, train_gs_reg_reset, train_gs_clamp
+from nodag.nodag_gumbel_softmax import train_gumbel_sgd_dag
 from SCM_data import generate_scm_data
 import numpy as np
 from numpy.linalg import LinAlgError, inv
@@ -71,7 +72,42 @@ def nodag_findbest_loss(R_hat, lam=0.5, delta=1e-6, max_steps=5000, tau_start=0.
     return best_G, best_B, best_P, best_U, best_loss, best_likelihood, best_penalty, best_seed
 
 
-def nodag_findbest_loss_reg(R_hat, lam=0.5, delta=1e-6, max_steps=5000, tau_start=0.2, tau_end=0.2, times=100):
+# def nodag_findbest_clamp(R_hat, lam=0.5, delta=1e-6, max_steps=5000, tau_start=0.2, tau_end=0.2, times=100):
+    best_loss = np.inf
+    best_seed = 0
+    for t in range(times):
+        #start = time.time()
+        #print("seed",t)
+        # if t % (times // 10) == 0:
+        #     percent = int(t / times * 100)
+        #     print(f"Progress: {percent}%")
+        seed = t
+        np.random.seed(seed) 
+        B_init = np.random.randn(*R_hat.shape)
+        B_final,G_final, info = train_gs_clamp(
+            Rhat_np = R_hat,
+            lam = lam,
+            delta = delta,
+            max_steps = max_steps,
+            tau_start = tau_start,
+            tau_end = tau_end,
+            B_init = B_init
+            )
+        #print(f"Seed {t} took {time.time() - start:.2f}s, loss={info['final_loss']}")
+
+        if info["final_loss"] < best_loss:
+            best_loss = info["final_loss"]
+            best_likelihood = info["final_likelihood"]
+            best_penalty = info["final_penalty"]
+            best_P = info["P_final"]
+            best_U = info["U_final"]
+            best_seed = seed
+            best_G = G_final
+            best_B = B_final
+    return best_G, best_B, best_P, best_U, best_loss, best_likelihood, best_penalty, best_seed
+
+
+# def nodag_findbest_loss_reg(R_hat, lam=0.5, delta=1e-6, max_steps=5000, tau_start=0.2, tau_end=0.2, times=100):
     best_loss = np.inf
     best_seed = 0
     for t in range(times):
@@ -102,7 +138,7 @@ def nodag_findbest_loss_reg(R_hat, lam=0.5, delta=1e-6, max_steps=5000, tau_star
     return best_G, best_B, best_P, best_U, best_loss, best_likelihood, best_penalty, best_seed
 
 
-def nodag_findbest_loss_reg_reset(R_hat, lam=0.5, delta=1e-6, max_steps=5000, tau_start=0.2, tau_end=0.2, times=100):
+def nodag_findbest_reset(R_hat, lam=0.5, delta=1e-6, max_steps=5000, tau_start=0.2, tau_end=0.2, times=100):
     best_loss = np.inf
     best_seed = 0
     for t in range(times):
@@ -122,15 +158,10 @@ def nodag_findbest_loss_reg_reset(R_hat, lam=0.5, delta=1e-6, max_steps=5000, ta
             B_init = B_init
             )
         if info["final_loss"] < best_loss:
-            best_loss = info["final_loss"]
-            best_likelihood = info["final_likelihood"]
-            best_penalty = info["final_penalty"]
-            best_P = info["P_final"]
-            best_U = info["U_final"]
-            best_seed = seed
+            best_info = info.copy()
             best_G = G_final
             best_B = B_final
-    return best_G, best_B, best_P, best_U, best_loss, best_likelihood, best_penalty, best_seed
+    return best_G, best_B, B_init, best_info
 
 
 
@@ -138,7 +169,7 @@ def nodag_findbest_loss_reg_reset(R_hat, lam=0.5, delta=1e-6, max_steps=5000, ta
 def nodag_findbest_likelihood_penalty(
     R_hat, lam=0.5, delta=1e-6, max_steps=5000,
     tau_start=0.2, tau_end=0.2, times=100, eps=1e-3
-):
+    ):
     results = []
     for t in range(times):
         seed = t
@@ -182,6 +213,205 @@ def nodag_findbest_likelihood_penalty(
         best["loss"], best["likelihood"],
         best["penalty"], best["seed"]
     )
+
+
+def nodag_fb_l_clamp(
+    R_hat, lam=0.5, delta=1e-6, max_steps=5000,
+    tau_start=0.2, tau_end=0.2, times=100, eps=1e-3
+    ):
+    results = []
+    for t in range(times):
+        seed = t
+        np.random.seed(seed)
+        B_init = np.random.randn(*R_hat.shape)
+        if t % 100 == 0: print("t = ",t)
+
+        B_final, G_final, info = train_gs_clamp(
+            Rhat_np=R_hat,
+            lam=lam,
+            delta=delta,
+            max_steps=max_steps,
+            tau_start=tau_start,
+            tau_end=tau_end,
+            B_init=B_init
+        )
+
+        results.append({
+            "seed": seed,
+            "G": G_final,
+            "B": B_final,
+            "P": info["P_final"],
+            "U": info["U_final"],
+            "loss": info["final_loss"],
+            "likelihood": info["final_likelihood"],
+            "penalty": info["final_penalty"],
+        })
+
+    min_likelihood = min(r["likelihood"] for r in results)
+
+    candidates = [
+        r for r in results
+        if abs(r["likelihood"] - min_likelihood) <= eps
+    ]
+
+    best = min(candidates, key=lambda r: r["penalty"])
+
+    return (
+        best["G"], best["B"],
+        best["P"], best["U"],
+        best["loss"], best["likelihood"],
+        best["penalty"], best["seed"]
+    )
+
+
+def nodag_fb_l_reg(
+    R_hat, lam=0.5, delta=1e-6, max_steps=5000,
+    tau_start=0.2, tau_end=0.2, times=100, eps=1e-3
+    ):
+    results = []
+    for t in range(times):
+        seed = t
+        np.random.seed(seed)
+        B_init = np.random.randn(*R_hat.shape)
+        if t % 100 == 0: print("t = ",t)
+
+        B_final, G_final, info = train_gs_reg(
+            Rhat_np=R_hat,
+            lam=lam,
+            delta=delta,
+            max_steps=max_steps,
+            tau_start=tau_start,
+            tau_end=tau_end,
+            B_init=B_init
+        )
+
+        results.append({
+            "seed": seed,
+            "G": G_final,
+            "B": B_final,
+            "P": info["P_final"],
+            "U": info["U_final"],
+            "loss": info["final_loss"],
+            "likelihood": info["final_likelihood"],
+            "penalty": info["final_penalty"],
+        })
+
+    min_likelihood = min(r["likelihood"] for r in results)
+
+    candidates = [
+        r for r in results
+        if abs(r["likelihood"] - min_likelihood) <= eps
+    ]
+
+    best = min(candidates, key=lambda r: r["penalty"])
+
+    return (
+        best["G"], best["B"],
+        best["P"], best["U"],
+        best["loss"], best["likelihood"],
+        best["penalty"], best["seed"]
+    )
+
+
+def nodag_fb_l_reset(
+    R_hat, lam=0.5, delta=1e-6, max_steps=5000,
+    tau_start=0.2, tau_end=0.2, times=100, eps=1e-3
+    ):
+    results = []
+    for t in range(times):
+        seed = t
+        np.random.seed(seed)
+        B_init = np.random.randn(*R_hat.shape)
+        if t % 100 == 0: print("t = ",t)
+
+        B_final, G_final, info = train_gs_reg_reset(
+            Rhat_np=R_hat,
+            lam=lam,
+            delta=delta,
+            max_steps=max_steps,
+            tau_start=tau_start,
+            tau_end=tau_end,
+            B_init=B_init
+        )
+
+        results.append({
+            "seed": seed,
+            "G": G_final,
+            "B": B_final,
+            "P": info["P_final"],
+            "U": info["U_final"],
+            "loss": info["final_loss"],
+            "likelihood": info["final_likelihood"],
+            "penalty": info["final_penalty"],
+        })
+
+    min_likelihood = min(r["likelihood"] for r in results)
+
+    candidates = [
+        r for r in results
+        if abs(r["likelihood"] - min_likelihood) <= eps
+    ]
+
+    best = min(candidates, key=lambda r: r["penalty"])
+
+    return (
+        best["G"], best["B"],
+        best["P"], best["U"],
+        best["loss"], best["likelihood"],
+        best["penalty"], best["seed"]
+    )
+
+
+
+def nodag_fb_l_dag(
+    R_hat, lam=0.5, delta=1e-6, max_steps=5000,
+    tau_start=0.2, tau_end=0.2, times=100, eps=1e-3
+    ):
+    results = []
+    for t in range(times):
+        seed = t
+        np.random.seed(seed)
+        B_init = np.random.randn(*R_hat.shape)
+        if t % 100 == 0: print("t = ",t)
+
+        B_final, G_final, info = train_gumbel_sgd_dag(
+            Rhat_np=R_hat,
+            lam=lam,
+            delta=delta,
+            max_steps=max_steps,
+            tau_start=tau_start,
+            tau_end=tau_end,
+            B_init=B_init
+        )
+
+        results.append({
+            "seed": seed,
+            "G": G_final,
+            "B": B_final,
+            "P": info["P_final"],
+            "U": info["U_final"],
+            "loss": info["final_loss"],
+            "likelihood": info["final_likelihood"],
+            "penalty": info["final_penalty"],
+            "thr": info["thr"],
+        })
+
+
+    print("Valid likelihoods:",[r["likelihood"] for r in results if not np.isnan(r["likelihood"])])
+    min_likelihood = min(r["likelihood"] for r in results)
+
+    candidates = [
+        r for r in results
+        if abs(r["likelihood"] - min_likelihood) <= eps
+    ]
+
+    best = min(candidates, key=lambda r: r["penalty"])
+    return (
+        best
+    )
+
+
+
 
 def calculate_shd(est, true):
     est_dag = adjacency_to_dag(est)
