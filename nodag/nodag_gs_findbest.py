@@ -2,7 +2,7 @@ import sys, os
 import torch
 import torch.nn as nn
 from torch.optim import Adam, LBFGS
-from nodag.nodag_gumbel_softmax import train_gs_clamp, train_gumbel_sgd, train_gs_reg, train_gs_reg_reset, train_gs_clamp
+from nodag.nodag_gumbel_softmax import train_gs_clamp, train_gumbel_sgd, train_gs_reg, train_gs_clamp
 from nodag.nodag_gumbel_softmax import train_gumbel_sgd_dag
 from SCM_data import generate_scm_data
 import numpy as np
@@ -397,7 +397,7 @@ def nodag_fb_l_dag(
         })
 
 
-    print("Valid likelihoods:",[r["likelihood"] for r in results if not np.isnan(r["likelihood"])])
+    #print("Valid likelihoods:",[r["likelihood"] for r in results if not np.isnan(r["likelihood"])])
     min_likelihood = min(r["likelihood"] for r in results)
 
     candidates = [

@@ -27,7 +27,7 @@ def weight_to_adjacency(W, threshold=0.05):
 import numpy as np
 import networkx as nx
 
-def make_acyclic_bin(W, init_thr=0.01, step=0.01, max_thr=None):
+def make_acyclic_bin(W, init_thr=0.0, step=0.01, max_thr=None):
     """
     Threshold weighted adjacency until the graph is acyclic.
     """
@@ -286,7 +286,7 @@ def train_gs_clamp(Rhat_np,
                      weight_decay=0.0,   # L2 on U/P if needed
                      tau_start=1.0,
                      tau_end=0.2,
-                     hard_st=True,
+                     hard_st=False,
                      device="cpu",
                      dtype=torch.float64,
                      seed=0,
@@ -366,7 +366,7 @@ def train_gs_reg(Rhat_np,
                      lambda_reg=1e-3,   # L2 on U/P if needed
                      tau_start=1.0,
                      tau_end=0.2,
-                     hard_st=True,
+                     hard_st=False,
                      device="cpu",
                      dtype=torch.float64,
                      seed=0,
@@ -583,7 +583,7 @@ def train_gumbel_sgd_dag(Rhat_np,
                      weight_decay=0.0,   # L2 on U/P if needed
                      tau_start=1.0,
                      tau_end=0.2,
-                     hard_st=True,
+                     hard_st=False,
                      device="cpu",
                      dtype=torch.float64,
                      seed=0,
@@ -626,9 +626,10 @@ def train_gumbel_sgd_dag(Rhat_np,
                                 float(likelihood.detach().cpu()),
                                 float(penalty.detach().cpu()),
                                 sparsity))
-        if torch.isnan(loss):
-            print("NaN at step", t, "loss =", loss.item())
-            print("Current B =", B.detach().cpu().numpy())
+        if any(torch.isnan(x) for x in [loss, logdet, trace, likelihood, penalty]):
+            print("NaN at step", step)
+            print("logdet:", logdet, "trace:", trace,
+                "likelihood:", likelihood, "penalty:", penalty)
             break
 
     with torch.no_grad():
@@ -637,7 +638,7 @@ def train_gumbel_sgd_dag(Rhat_np,
     
     P_final = model.P.detach().cpu().numpy()
     U_final = model.U.detach().cpu().numpy()
-    G_final, thr = make_acyclic_bin(B_final.detach().cpu().numpy(), 0.01)
+    G_final, thr = make_acyclic_bin(B_final.detach().cpu().numpy())
     np.fill_diagonal(G_final, 0)
 
     return B_final.detach().cpu().numpy(), G_final, {
