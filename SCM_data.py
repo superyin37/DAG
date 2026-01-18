@@ -1,4 +1,5 @@
 import numpy as np
+from typing import Optional, Union
 
 def generate_scm_data(scm_id, n_samples = 1000, seed = None):
     """
@@ -82,9 +83,9 @@ import numpy as np
 def generate_scm_from_BN(
     B: np.ndarray,
     n_samples: int,
-    N: np.ndarray | float | None = None,
+    N: Union[np.ndarray, float, None] = None,
     *,
-    seed: int | None = None
+    seed: Optional[int] = None
 ):
     """
     Generate data from a given linear SCM:  X = B^T X + N,   N ~ Normal(0, Sigma)

@@ -1,0 +1,1 @@
+"""GOLEM source package initializer."""

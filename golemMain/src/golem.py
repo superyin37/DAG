@@ -1,10 +1,10 @@
 import os
 import numpy as np
 
-from .models import GolemModel
-from .trainers import GolemTrainer
-from .data_loader import SyntheticDataset
-from .data_loader import SCM_data
+from models import GolemModel
+from trainers import GolemTrainer
+from data_loader import SyntheticDataset
+from data_loader import SCM_data
 
 from utils import MEC
 
