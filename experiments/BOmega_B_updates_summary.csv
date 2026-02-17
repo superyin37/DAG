@@ -1,0 +1,2 @@
+total_iterations,no_update_count,ij_update_count,ji_update_count,B_improved_count,B_worsened_count,Omega_improved_count,Omega_worsened_count,B_total_contribution,Omega_total_contribution,final_score,true_score
+200,0,100,100,193,7,191,9,-18.863674863885294,-45.623930070240164,4.46101074349011,4.794816758094181

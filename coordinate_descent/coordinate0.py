@@ -11,6 +11,7 @@ import numpy as np
 from scipy.linalg import expm
 
 
+
 # -----------------------------
 # Utility functions
 # -----------------------------
@@ -201,3 +202,80 @@ def dag_coordinate_descent_l0(S, T=100, seed=0, threshold=0.05, lambda_l0 = 0.2)
     G = weight_to_adjacency(A, threshold)
     return A, G, f(A, S)
 
+
+
+def dag_coordinate_descent_l0_epoch(
+    S,
+    n_epochs=500,
+    seed=0,
+    threshold=0.05,
+    lambda_l0=0.2,
+    tol=1e-4,
+    patience=10,
+    min_epochs=50,
+    verbose=False
+):
+    np.random.seed(seed)
+    d = S.shape[0]
+
+    # initialization
+    A = np.eye(d)
+
+    # unordered edge pairs
+    edge_pairs = [(i, j) for i in range(d) for j in range(i + 1, d)]
+
+    history = []
+    no_improve_count = 0
+    prev_f = f(A, S)
+
+    for epoch in range(1, n_epochs + 1):
+
+        # ============================
+        # Block 1: structure block
+        # ============================
+        np.random.shuffle(edge_pairs)
+        for (i, j) in edge_pairs:
+            A = update_off_diagonal(A, S, i, j, lambda_l0)
+
+        # ============================
+        # Block 2: scale block
+        # ============================
+        for i in range(d):
+            A = update_diagonal(A, S, i)
+
+        # ============================
+        # Epoch evaluation
+        # ============================
+        curr_f = f(A, S)
+        history.append(curr_f)
+
+        rel_improve = (prev_f - curr_f) / max(1.0, abs(prev_f))
+
+        if verbose:
+            print(
+                f"[Epoch {epoch:03d}] "
+                f"f = {curr_f:.6f}, "
+                f"rel_improve = {rel_improve:.3e}"
+            )
+
+        # ============================
+        # Early stopping logic
+        # ============================
+        if epoch >= min_epochs:
+            if rel_improve < tol:
+                no_improve_count += 1
+            else:
+                no_improve_count = 0
+
+            if no_improve_count >= patience:
+                if verbose:
+                    print(
+                        f"Early stopping triggered at epoch {epoch} "
+                        f"(no improvement for {patience} epochs)."
+                    )
+                break
+
+        prev_f = curr_f
+
+    G = weight_to_adjacency(A, threshold)
+    return A, G, curr_f, history
