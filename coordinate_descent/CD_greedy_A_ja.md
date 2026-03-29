@@ -161,28 +161,35 @@ $$h(W) = \operatorname{tr}(\exp(W \circ W)) - d = 0$$
 
 は行列指数関数の計算を要し，**$O(d^3)$** のコストがかかる。これは連続最適化（勾配法）での微分可能な正則化のために設計されたものであり，2値の判定には過剰なコストである。
 
-### 6.2 新手法：DFS 到達可能性
+### 6.2 新手法：Kahn のトポロジカルソート
 
-現在のグラフが DAG であるという**不変量**を活用する：
-
-> 辺 $i \to j$ を追加したとき閉路が生じる $\iff$ 現在のグラフに $j$ から $i$ への有向路が存在する
-
-これは有向グラフの到達可能性問題であり，DFS（深さ優先探索）で解ける：
+辺 $i \to j$ を**一時的に追加**したうえで，グラフ全体に対して Kahn のアルゴリズムを実行する：
 
 ```
+is_dag_kahn(adj):
+    各ノードの入次数を計算
+    入次数 0 のノードをキューに追加
+    while キューが空でない:
+        ノード u をキューから取り出し，処理済みカウントをインクリメント
+        u の隣接ノード v の入次数を 1 減らし，0 になればキューに追加
+    return 処理済みカウント == d   # 全ノード処理できれば DAG
+
 can_add_edge(adj, i, j):
-    j を起点に DFS を実行
-    i に到達できれば False（閉路が生じる）
-    到達できなければ True（安全に追加可能）
+    adj[i] に j を追加
+    result = is_dag_kahn(adj)
+    adj[i] から j を削除
+    return result
 ```
+
+不変量に一切依存せず，グラフの現在の状態に関わらず正しく動作する。
 
 計算量：**$O(d + E)$**（$E$ は現在の辺数）。
 
-| 手法 | 計算量 | 備考 |
-|------|--------|------|
-| NOTEARS expm | $O(d^3)$ | 連続最適化向け設計 |
-| DFS 到達可能性 | $O(d + E)$ | 不変量を利用 |
-| トポロジカルソート | $O(d + E)$ | 不変量不要でも $O(d^2)$ 以下 |
+| 手法 | 計算量 | 不変量依存 | 備考 |
+|------|--------|-----------|------|
+| NOTEARS expm | $O(d^3)$ | 不要 | 連続最適化向け設計 |
+| DFS 到達可能性 | $O(d + E)$ | **必要** | j の可達部分グラフのみ探索 |
+| **Kahn トポロジカルソート** | $O(d + E)$ | **不要** | グラフ全体を走査 |
 
 疎なグラフ（$E = O(d)$）では $O(d)$ まで改善される。
 
@@ -196,13 +203,13 @@ can_add_edge(adj, i, j):
 |------|--------|------|
 | 勾配取得 | $O(1)$ | `G` はキャッシュ済み |
 | スコア計算 | $O(d^2)$ | `max(\|G\|, \|G^T\|)` の上三角 |
-| ペアのソート | $O(d^2 \log d)$ | `np.argsort` |
-| 実行可能性チェック × $k$ | $O(k(d+E))$ | DFS，通常 $k \approx 1$ |
+| ペア選択（argmax × $k$） | $O(k d^2)$ | 不可行ペアをマスクして繰り返し argmax，通常 $k \approx 1$ |
+| 実行可能性チェック × $k$ | $O(k(d+E))$ | Kahn，$O(k d^2)$ に比べ無視できる |
 | ゼロ化（rank-1 × 2） | $O(d^2)$ | SM + G 更新 |
 | $\delta^*$ 計算 | $O(d)$ | 閉形式 |
 | $\Delta$ 評価 | $O(1)$ | 増分公式 |
 | 辺の追加（rank-1） | $O(d^2)$ | SM + G 更新 |
-| **合計** | $\mathbf{O(d^2 \log d + k(d+E))}$ | 疎なグラフで $O(d^2)$ |
+| **合計** | $\mathbf{O(k d^2)}$ | $k=1$ 時は $O(d^2)$，ソート不要 |
 
 初期化（1回のみ）：$A^{-1}$，$G$，$f$ の計算で $O(d^3)$。
 
@@ -252,13 +259,14 @@ Epoch 版の漸近複雑度はランダム CD と変わらないが，**1 epoch 
 ```
 cd_greedy_A.py
 ├── _build_adjacency(A, threshold)           隣接リストの構築
-├── _can_add_edge(adj, i, j)                 DFS 実行可能性判定  O(d+E)
-├── _rank1_update(A, A_inv, G, S, i, j, δ,  ランク-1 同期更新   O(d²)
+├── _is_dag_kahn(adj)                        Kahn DAG 判定        O(d+E)
+├── _can_add_edge(adj, i, j)                 辺追加の実行可能性   O(d+E)
+├── _rank1_update(A, A_inv, G, S, i, j, δ,  ランク-1 同期更新    O(d²)
 │       f_state, adj)
 ├── _recompute_all(A, S, A_inv, G, f_state)  フォールバック再計算 O(d³)
-├── _pair_scores(G)                          スコア行列の計算     O(d²)
-├── update_off_diagonal_greedy(...)          非対角更新           O(d²+d+E)
-├── update_diagonal_greedy(...)              対角更新             O(d²)
+├── _pair_scores(G)                          スコア行列の計算      O(d²)
+├── update_off_diagonal_greedy(...)          非対角更新            O(d²+d+E)
+├── update_diagonal_greedy(...)              対角更新              O(d²)
 ├── dag_greedy_A(S, T, ...)                  T-step 版メイン関数
 └── dag_greedy_A_epoch(S, n_epochs, ...)     Epoch 版メイン関数
 ```

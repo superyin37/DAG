@@ -17,27 +17,39 @@ def _build_adjacency(A: np.ndarray, threshold: float = 1e-8) -> List[set]:
     return adj
 
 
+def _is_dag_kahn(adj: List[set]) -> bool:
+    """
+    Classic DAG check via Kahn's topological sort.  O(d + E).
+    Does not rely on any invariant about the current graph.
+    """
+    d = len(adj)
+    in_deg = [0] * d
+    for u in range(d):
+        for v in adj[u]:
+            in_deg[v] += 1
+    queue = [u for u in range(d) if in_deg[u] == 0]
+    count = 0
+    while queue:
+        u = queue.pop()
+        count += 1
+        for v in adj[u]:
+            in_deg[v] -= 1
+            if in_deg[v] == 0:
+                queue.append(v)
+    return count == d
+
+
 def _can_add_edge(adj: List[set], i: int, j: int) -> bool:
     """
-    Can we add directed edge i→j without creating a cycle?
-
-    Exploits the invariant that adj is always a DAG: a cycle would form iff
-    j can already reach i.  Iterative DFS — O(d + E).
+    Check if adding directed edge i→j keeps the graph a DAG.
+    Temporarily adds the edge, runs Kahn's algorithm, then removes it.  O(d + E).
     """
     if i == j:
         return False
-    visited = set()
-    stack = [j]
-    while stack:
-        node = stack.pop()
-        if node == i:
-            return False
-        if node not in visited:
-            visited.add(node)
-            for nxt in adj[node]:
-                if nxt not in visited:
-                    stack.append(nxt)
-    return True
+    adj[i].add(j)
+    result = _is_dag_kahn(adj)
+    adj[i].discard(j)
+    return result
 
 
 # ============================================================
@@ -345,12 +357,15 @@ def dag_greedy_A(
     for _ in range(T):
         # Recompute scores from current G — O(d²)
         score_matrix = np.maximum(np.abs(G), np.abs(G.T))
-        scores = score_matrix[ii_all, jj_all]
-        sorted_idx = np.argsort(scores)[::-1]   # O(d² log d)
+        scores = score_matrix[ii_all, jj_all].copy()
 
-        # Scan for the first pair where ≥1 direction is DAG-feasible after zeroing
+        # Greedy scan: argmax → check feasibility → mask and repeat
+        # Each argmax is O(d²); k iterations total O(k·d²), k≈1 in practice
         selected = None
-        for idx in sorted_idx:
+        while True:
+            idx = int(np.argmax(scores))
+            if scores[idx] < 0:   # all pairs exhausted (masked to -1)
+                break
             pi, pj = int(ii_all[idx]), int(jj_all[idx])
             # Temporarily remove existing edges to simulate A_half
             has_ij = pj in adj[pi]
@@ -369,6 +384,7 @@ def dag_greedy_A(
             if feasible:
                 selected = (pi, pj)
                 break
+            scores[idx] = -1   # mask and try next best
 
         if selected is not None:
             update_off_diagonal_greedy(
