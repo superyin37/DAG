@@ -69,6 +69,33 @@ def weight_to_adjacency(W: np.ndarray, threshold: float = 0.05) -> np.ndarray:
 
 
 # ============================================================
+# Sherman–Morrison inverse update  (O(d²) rank-1 update)
+# ============================================================
+
+def _sm_update_M_inv(M_inv: np.ndarray, i: int, j: int, delta: float) -> bool:
+    """
+    Sherman–Morrison rank-1 update of M_inv when B[i,j] changes by *delta*.
+
+    M = I - B^T.  When B[i,j] += delta, M becomes M - delta * e_j e_i^T.
+    By Sherman–Morrison:
+        M_new^{-1} = M_inv + delta / (1 - delta * M_inv[i,j])
+                      * outer(M_inv[:,j], M_inv[i,:])
+
+    Updates M_inv **in-place**.
+    Returns True on success, False if the denominator is too small
+    (caller should recompute the full inverse).
+    """
+    if abs(delta) < 1e-30:
+        return True
+    a = M_inv[i, j]
+    denom = 1.0 - delta * a
+    if abs(denom) < 1e-15:
+        return False
+    M_inv += (delta / denom) * np.outer(M_inv[:, j], M_inv[i, :])
+    return True
+
+
+# ============================================================
 # Closed-form Omega update (transpose-consistent)
 # ============================================================
 
@@ -103,6 +130,7 @@ def delta_star_BOmega(
     S: np.ndarray,
     i: int,
     j: int,
+    M_inv: Optional[np.ndarray] = None,
     eps: float = 1e-12
 ) -> float:
     """
@@ -117,29 +145,36 @@ def delta_star_BOmega(
     Closed-form:
       delta* = (m a + q - sqrt((m a + q)^2 - 4 q a (m - a))) / (2 q a)
     with feasibility: 1 - delta*a > 0.
+
+    If *M_inv* is supplied the lookup a = M_inv[i,j] is O(1);
+    m is computed via the j-th row of M in O(d).
     """
     if i == j:
         return 0.0
 
     d = B.shape[0]
-    M = np.eye(d) - B.T  # M = I - B^T
-
-    try:
-        M_inv = np.linalg.inv(M)
-    except np.linalg.LinAlgError:
-        return 0.0
+    if M_inv is None:
+        M = np.eye(d) - B.T
+        try:
+            M_inv = np.linalg.inv(M)
+        except np.linalg.LinAlgError:
+            return 0.0
 
     # a := [M^{-1}]_{ij}
     a = float(M_inv[i, j])
 
     omega_diag = np.diag(Omega)
-    Omega_inv = np.diag(1.0 / (omega_diag + eps))
+    omega_j_inv = 1.0 / (omega_diag[j] + eps)
 
-    # m := [Omega^{-1} M S]_{ji}
-    m = float((Omega_inv @ M @ S)[j, i])
+    # Row j of M = I - B^T:  M[j, k] = δ_{jk} - B[k, j]
+    M_j = -B[:, j].copy()
+    M_j[j] += 1.0
 
-    # q := (Omega^{-1})_{jj} S_{ii}
-    q = float(Omega_inv[j, j] * S[i, i])
+    # m = [Omega^{-1} M S]_{ji} = omega_j_inv * M[j,:] @ S[:,i]  — O(d)
+    m = float(omega_j_inv * (M_j @ S[:, i]))
+
+    # q := (Omega^{-1})_{jj} S_{ii}  — O(1)
+    q = float(omega_j_inv * S[i, i])
 
     if abs(q) < 1e-8:
         return 0.0
@@ -175,15 +210,31 @@ def update_off_diagonal_BOmega(
     k: Optional[int] = None,
     dag_tol: float = 1e-8,
     step: Optional[int] = None,
-    debug_list: Optional[list] = None
+    debug_list: Optional[list] = None,
+    M_inv: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     if i == j:
         return B
 
     d = B.shape[0]
+
+    # Track old values for Sherman–Morrison updates
+    old_bij = B[i, j]
+    old_bji = B[j, i]
+
     B_half = B.copy()
     B_half[i, j] = 0.0
     B_half[j, i] = 0.0
+
+    # Update cached M_inv to reflect B_half via Sherman–Morrison  — O(d²)
+    if M_inv is not None:
+        ok = True
+        if old_bij != 0.0:
+            ok = _sm_update_M_inv(M_inv, i, j, -old_bij)
+        if ok and old_bji != 0.0:
+            ok = _sm_update_M_inv(M_inv, j, i, -old_bji)
+        if not ok:  # fallback: recompute full inverse
+            M_inv[:] = np.linalg.inv(np.eye(d) - B_half.T)
 
     Eij = np.eye(d)[i][:, None] * np.eye(d)[j][None, :]
     Eji = np.eye(d)[j][:, None] * np.eye(d)[i][None, :]
@@ -194,11 +245,11 @@ def update_off_diagonal_BOmega(
     delta_ij, delta_ji = 0.0, 0.0
 
     if is_DAG(B_half + Eij, tol=dag_tol, k=k):
-        delta_ij = delta_star_BOmega(B_half, Omega, S, i, j)
+        delta_ij = delta_star_BOmega(B_half, Omega, S, i, j, M_inv=M_inv)
         Delta_ij = base_val - ell(B_half + delta_ij * Eij, Omega, S) - lambda_l0
 
     if is_DAG(B_half + Eji, tol=dag_tol, k=k):
-        delta_ji = delta_star_BOmega(B_half, Omega, S, j, i)
+        delta_ji = delta_star_BOmega(B_half, Omega, S, j, i, M_inv=M_inv)
         Delta_ji = base_val - ell(B_half + delta_ji * Eji, Omega, S) - lambda_l0
 
     if debug_list is not None:
@@ -214,8 +265,15 @@ def update_off_diagonal_BOmega(
         return B_half
 
     if Delta_ij > Delta_ji:
+        # Update M_inv for the chosen edge  — O(d²)
+        if M_inv is not None:
+            if not _sm_update_M_inv(M_inv, i, j, delta_ij):
+                M_inv[:] = np.linalg.inv(np.eye(d) - (B_half + delta_ij * Eij).T)
         return B_half + delta_ij * Eij
     else:
+        if M_inv is not None:
+            if not _sm_update_M_inv(M_inv, j, i, delta_ji):
+                M_inv[:] = np.linalg.inv(np.eye(d) - (B_half + delta_ji * Eji).T)
         return B_half + delta_ji * Eji
 
 
@@ -233,19 +291,22 @@ def dag_coordinate_descent_BOmega(
     k: Optional[int] = None,
     dag_tol: float = 1e-8,
     eps_omega: float = 1e-8,
+    B_init: Optional[np.ndarray] = None,
 ):
     np.random.seed(seed)
     d = S.shape[0]
-    B = np.zeros((d, d))
+    B = B_init.copy() if B_init is not None else np.zeros((d, d))
     Omega_curr = Omega.copy()
     debug_info = []
+
+    M_inv = np.linalg.inv(np.eye(d) - B.T)
 
     for t in range(T):
         i, j = np.random.choice(d, 2, replace=False)
         B = update_off_diagonal_BOmega(
             B, Omega_curr, S, i, j,
             lambda_l0=lambda_l0, k=k, dag_tol=dag_tol, step=t,
-            debug_list=debug_info
+            debug_list=debug_info, M_inv=M_inv
         )
         Omega_curr = update_Omega_closed_form(B, S, eps=eps_omega)
 
@@ -271,10 +332,11 @@ def dag_coordinate_descent_BOmega_epoch(
     min_epochs: int = 50,
     eps_omega: float = 1e-8,
     verbose: bool = False,
+    B_init: Optional[np.ndarray] = None,
 ):
     np.random.seed(seed)
     d = S.shape[0]
-    B = np.zeros((d, d))
+    B = B_init.copy() if B_init is not None else np.zeros((d, d))
     Omega_curr = Omega.copy()
 
     edge_pairs = [(i, j) for i in range(d) for j in range(i + 1, d)]
@@ -285,12 +347,15 @@ def dag_coordinate_descent_BOmega_epoch(
     no_improve = 0
 
     for epoch in range(1, n_epochs + 1):
+        # Recompute M_inv each epoch for numerical stability — O(d³) once
+        M_inv = np.linalg.inv(np.eye(d) - B.T)
+
         np.random.shuffle(edge_pairs)
         for (i, j) in edge_pairs:
             B = update_off_diagonal_BOmega(
                 B, Omega_curr, S, i, j,
                 lambda_l0=lambda_l0, k=k, dag_tol=dag_tol,
-                debug_list=debug_info
+                debug_list=debug_info, M_inv=M_inv
             )
 
         Omega_curr = update_Omega_closed_form(B, S, eps=eps_omega)

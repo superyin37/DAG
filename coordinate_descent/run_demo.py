@@ -8,7 +8,7 @@ REPO_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, os.pardir))
 if REPO_ROOT not in sys.path:
     sys.path.append(REPO_ROOT)
 
-from coordinate import dag_coordinate_descent
+from coordinate_descent.coordinate_delete import dag_coordinate_descent
 from MEC import is_in_markov_equiv_class
 from SCM_data import generate_scm_data
 

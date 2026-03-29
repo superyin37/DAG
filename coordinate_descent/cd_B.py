@@ -12,7 +12,7 @@ def f_B(B: np.ndarray, S: np.ndarray, eps: float = 1e-12) -> float:
     Profiled negative log-likelihood (up to a constant):
 
         f(B) = sum_i log( [(I - B^T) S (I - B)]_{ii} )
-               - 2 log det(I - B^T)
+               - 2 log det(I - B^T) + d
 
     consistent with X = B^T X + N.
     """
@@ -30,7 +30,7 @@ def f_B(B: np.ndarray, S: np.ndarray, eps: float = 1e-12) -> float:
     if np.any(v <= 0):
         return np.inf
 
-    return float(np.sum(np.log(v + eps)) - 2.0 * logabsdet)
+    return float(np.sum(np.log(v + eps)) - 2.0 * logabsdet) + d
 
 
 # ============================================================
@@ -62,6 +62,33 @@ def weight_to_adjacency(W: np.ndarray, threshold: float = 0.05) -> np.ndarray:
 
 
 # ============================================================
+# Sherman–Morrison inverse update  (O(d²) rank-1 update)
+# ============================================================
+
+def _sm_update_M_inv(M_inv: np.ndarray, i: int, j: int, delta: float) -> bool:
+    """
+    Sherman–Morrison rank-1 update of M_inv when B[i,j] changes by *delta*.
+
+    M = I - B^T.  When B[i,j] += delta, M becomes M - delta * e_j e_i^T.
+    By Sherman–Morrison:
+        M_new^{-1} = M_inv + delta / (1 - delta * M_inv[i,j])
+                      * outer(M_inv[:,j], M_inv[i,:])
+
+    Updates M_inv **in-place**.
+    Returns True on success, False if the denominator is too small
+    (caller should recompute the full inverse).
+    """
+    if abs(delta) < 1e-30:
+        return True
+    a = M_inv[i, j]
+    denom = 1.0 - delta * a
+    if abs(denom) < 1e-15:
+        return False
+    M_inv += (delta / denom) * np.outer(M_inv[:, j], M_inv[i, :])
+    return True
+
+
+# ============================================================
 # Closed-form δ* for B-formulation
 # ============================================================
 
@@ -70,6 +97,7 @@ def delta_star_B(
     S: np.ndarray,
     i: int,
     j: int,
+    M_inv: Optional[np.ndarray] = None,
     eps: float = 1e-12
 ) -> float:
     """
@@ -85,26 +113,33 @@ def delta_star_B(
 
     Closed-form:
         delta* = (m - a v) / (q - m a)
+
+    If *M_inv* is supplied the lookup a = M_inv[i,j] is O(1);
+    m and v are computed via the j-th row of M in O(d) and O(d²).
     """
     if i == j:
         return 0.0
 
     d = B.shape[0]
-    M = np.eye(d) - B.T
-
-    try:
-        M_inv = np.linalg.inv(M)
-    except np.linalg.LinAlgError:
-        return 0.0
+    if M_inv is None:
+        M = np.eye(d) - B.T
+        try:
+            M_inv = np.linalg.inv(M)
+        except np.linalg.LinAlgError:
+            return 0.0
 
     a = float(M_inv[i, j])
 
-    MS = M @ S
-    m = float(MS[j, i])
+    # Row j of M = I - B^T:  M[j, k] = δ_{jk} - B[k, j]
+    M_j = -B[:, j].copy()
+    M_j[j] += 1.0
+
+    # m = (M S)_{ji} = M[j,:] @ S[:,i]  — O(d)
+    m = float(M_j @ S[:, i])
     q = float(S[i, i])
 
-    MSMT = MS @ M.T
-    v = float(MSMT[j, j])
+    # v = (M S M^T)_{jj} = M_j @ S @ M_j  — O(d²)
+    v = float((M_j @ S) @ M_j)
 
     denom = q - m * a
     if abs(denom) < 1e-18:
@@ -125,15 +160,31 @@ def update_off_diagonal_B(
     lambda_l0: float = 0.2,
     k: Optional[int] = None,
     dag_tol: float = 1e-8,
-    debug_list: Optional[list] = None
+    debug_list: Optional[list] = None,
+    M_inv: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     if i == j:
         return B
 
     d = B.shape[0]
+
+    # Track old values for Sherman–Morrison updates
+    old_bij = B[i, j]
+    old_bji = B[j, i]
+
     B_half = B.copy()
     B_half[i, j] = 0.0
     B_half[j, i] = 0.0
+
+    # Update cached M_inv to reflect B_half via Sherman–Morrison  — O(d²)
+    if M_inv is not None:
+        ok = True
+        if old_bij != 0.0:
+            ok = _sm_update_M_inv(M_inv, i, j, -old_bij)
+        if ok and old_bji != 0.0:
+            ok = _sm_update_M_inv(M_inv, j, i, -old_bji)
+        if not ok:  # fallback: recompute full inverse
+            M_inv[:] = np.linalg.inv(np.eye(d) - B_half.T)
 
     Eij = np.eye(d)[i][:, None] * np.eye(d)[j][None, :]
     Eji = np.eye(d)[j][:, None] * np.eye(d)[i][None, :]
@@ -144,11 +195,11 @@ def update_off_diagonal_B(
     delta_ij, delta_ji = 0.0, 0.0
 
     if is_DAG(B_half + Eij, tol=dag_tol, k=k):
-        delta_ij = delta_star_B(B_half, S, i, j)
+        delta_ij = delta_star_B(B_half, S, i, j, M_inv=M_inv)
         Delta_ij = base_val - f_B(B_half + delta_ij * Eij, S) - lambda_l0
 
     if is_DAG(B_half + Eji, tol=dag_tol, k=k):
-        delta_ji = delta_star_B(B_half, S, j, i)
+        delta_ji = delta_star_B(B_half, S, j, i, M_inv=M_inv)
         Delta_ji = base_val - f_B(B_half + delta_ji * Eji, S) - lambda_l0
 
     if debug_list is not None:
@@ -163,8 +214,15 @@ def update_off_diagonal_B(
         return B_half
 
     if Delta_ij > Delta_ji:
+        # Update M_inv for the chosen edge  — O(d²)
+        if M_inv is not None:
+            if not _sm_update_M_inv(M_inv, i, j, delta_ij):
+                M_inv[:] = np.linalg.inv(np.eye(d) - (B_half + delta_ij * Eij).T)
         return B_half + delta_ij * Eij
     else:
+        if M_inv is not None:
+            if not _sm_update_M_inv(M_inv, j, i, delta_ji):
+                M_inv[:] = np.linalg.inv(np.eye(d) - (B_half + delta_ji * Eji).T)
         return B_half + delta_ji * Eji
 
 
@@ -180,18 +238,21 @@ def dag_coordinate_descent_B(
     lambda_l0: float = 0.2,
     k: Optional[int] = None,
     dag_tol: float = 1e-8,
+    B_init: Optional[np.ndarray] = None,
 ):
     np.random.seed(seed)
     d = S.shape[0]
-    B = np.zeros((d, d))
+    B = B_init.copy() if B_init is not None else np.zeros((d, d))
     debug_info = []
+
+    M_inv = np.linalg.inv(np.eye(d) - B.T)
 
     for t in range(T):
         i, j = np.random.choice(d, 2, replace=False)
         B = update_off_diagonal_B(
             B, S, i, j,
             lambda_l0=lambda_l0, k=k, dag_tol=dag_tol,
-            debug_list=debug_info
+            debug_list=debug_info, M_inv=M_inv
         )
 
     G = weight_to_adjacency(B, threshold)
@@ -214,10 +275,11 @@ def dag_coordinate_descent_B_epoch(
     patience: int = 10,
     min_epochs: int = 50,
     verbose: bool = False,
+    B_init: Optional[np.ndarray] = None,
 ):
     np.random.seed(seed)
     d = S.shape[0]
-    B = np.zeros((d, d))
+    B = B_init.copy() if B_init is not None else np.zeros((d, d))
 
     edge_pairs = [(i, j) for i in range(d) for j in range(i + 1, d)]
 
@@ -228,12 +290,15 @@ def dag_coordinate_descent_B_epoch(
     no_improve = 0
 
     for epoch in range(1, n_epochs + 1):
+        # Recompute M_inv each epoch for numerical stability — O(d³) once
+        M_inv = np.linalg.inv(np.eye(d) - B.T)
+
         np.random.shuffle(edge_pairs)
         for (i, j) in edge_pairs:
             B = update_off_diagonal_B(
                 B, S, i, j,
                 lambda_l0=lambda_l0, k=k, dag_tol=dag_tol,
-                debug_list=debug_info
+                debug_list=debug_info, M_inv=M_inv
             )
 
         curr_val = f_B(B, S)

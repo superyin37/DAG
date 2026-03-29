@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mv debug_BOmega_B_updates.ipynb notebooks/debug/)",
+      "Bash(mv debug_BOmega_updates.ipynb notebooks/debug/)",
+      "Bash(mv er_graph_benchmark_ges_golem_cd.ipynb notebooks/benchmark/)",
+      "Bash(mv run_er_graph_runtime_scaling.ipynb notebooks/benchmark/)",
+      "Bash(mv validate_er_graph_cd.ipynb notebooks/validate/)",
+      "Bash(mv manual_dag_validate_all_algorithms.ipynb notebooks/validate/)",
+      "Bash(mv test_CD_20251226.ipynb test_cd_A_mec_score_relation.ipynb test_cd_B_epoch.ipynb test_cd_ell_visualize.ipynb test_cd_six_training_score_descent.ipynb test_manual_B_Omega_cd_algorithms_simple.ipynb notebooks/test/)",
+      "Bash(mv test_cd_B_Omega_0127.ipynb notebooks/test/)"
+    ]
+  }
+}

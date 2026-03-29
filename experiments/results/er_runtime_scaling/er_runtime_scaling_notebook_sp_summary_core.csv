@@ -1,0 +1,4 @@
+d,algorithm,n_total,n_ok,mec_match_mean,cpdag_shd_mean,runtime_sec_mean,status_counts
+10,sp,1,0,,,,{'skipped': 1}
+20,sp,1,0,,,,{'skipped': 1}
+30,sp,1,0,,,,{'skipped': 1}

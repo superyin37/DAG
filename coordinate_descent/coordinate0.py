@@ -21,20 +21,23 @@ def f(A, S):
     return -2 * np.log(np.linalg.det(A)) + np.trace(A.T @ S @ A)
 
 
-def delta_star(A, S, i, j,eps = 1e-6):
+def delta_star(A, S, i, j, A_inv=None, eps=1e-6):
     """
     Compute δ* = argmin_δ f(A + δ E_ij)
     following Theorem 1.
-    """
 
-    A_reg = A + eps * np.eye(A.shape[0])
-    try:
-        A_inv = np.linalg.inv(A_reg)
-    except np.linalg.LinAlgError:
-        return 0.0  
+    If *A_inv* is supplied, alpha = A_inv[j,i] is O(1);
+    otherwise computes np.linalg.inv(A) as fallback (O(d³)).
+    b is computed via S[i,:] @ A[:,j] in O(d).
+    """
+    if A_inv is None:
+        try:
+            A_inv = np.linalg.inv(A)
+        except np.linalg.LinAlgError:
+            return 0.0
     c = S[i, i]
-    b = (S @ A)[i, j]
-    alpha = np.linalg.inv(A)[j, i]
+    b = float(S[i, :] @ A[:, j])  # O(d) instead of O(d³)
+    alpha = float(A_inv[j, i])    # O(1) with cached inverse
 
     D = (c + alpha * b) ** 2 - 4 * alpha * c * (b - alpha)
 
@@ -42,6 +45,7 @@ def delta_star(A, S, i, j,eps = 1e-6):
     if abs(alpha) < 1e-12:
         return -b / c
 
+    D = max(D, 0.0)  # numerical safety
     # Closed-form stable expression
     delta = 2 * (b - alpha) / (-(c + alpha * b) - np.sqrt(D))
     return delta
@@ -85,6 +89,33 @@ def weight_to_adjacency(W, threshold=0.05):
 
 
 # -----------------------------
+# Sherman–Morrison inverse update  (O(d²) rank-1 update)
+# -----------------------------
+
+def _sm_update_A_inv(A_inv, i, j, delta):
+    """
+    Sherman–Morrison rank-1 update of A_inv when A[i,j] changes by *delta*.
+
+    A_new = A + delta * e_i e_j^T.
+    By Sherman–Morrison:
+        A_inv_new = A_inv - delta / (1 + delta * A_inv[j,i])
+                     * outer(A_inv[:,i], A_inv[j,:])
+
+    Updates A_inv **in-place**.
+    Returns True on success, False if the denominator is too small
+    (caller should recompute the full inverse).
+    """
+    if abs(delta) < 1e-30:
+        return True
+    alpha = A_inv[j, i]
+    denom = 1.0 + delta * alpha
+    if abs(denom) < 1e-15:
+        return False
+    A_inv -= (delta / denom) * np.outer(A_inv[:, i], A_inv[j, :])
+    return True
+
+
+# -----------------------------
 # Main algorithm
 # -----------------------------
 
@@ -121,7 +152,7 @@ def weight_to_adjacency(W, threshold=0.05):
             Δ_bar = f(A, S) - f(A + δ_bar_t * Eji, S) - lambda_l0
 
         if Δ == -np.inf and Δ_bar == -np.inf:
-            print("DAG/k constraint, continue")
+            # print("DAG/k constraint, continue")
             continue
 
         if Δ < 0 and Δ_bar < 0:
@@ -138,69 +169,122 @@ def weight_to_adjacency(W, threshold=0.05):
     return A, G, f(A, S)
 
 
-def update_diagonal(A, S, i):
+def update_diagonal(A, S, i, A_inv=None):
     d = S.shape[0]
+    old_aii = A[i, i]
     A[i, i] = 0.3
+
+    # Update A_inv for diagonal reset via Sherman–Morrison — O(d²)
+    if A_inv is not None:
+        chg = 0.3 - old_aii
+        if abs(chg) > 1e-30:
+            if not _sm_update_A_inv(A_inv, i, i, chg):
+                A_inv[:] = np.linalg.inv(A)
+
     Eii = np.eye(d)[i][:, None] * np.eye(d)[i][None, :]
-    δ = delta_star(A, S, i, i)
+    δ = delta_star(A, S, i, i, A_inv=A_inv)
     if f(A, S) - f(A + δ * Eii, S) < 0:
         print(f"error: i=j={i}, Δ < 0")
         return A
+
+    # Update A_inv for the accepted delta — O(d²)
+    if A_inv is not None:
+        if not _sm_update_A_inv(A_inv, i, i, δ):
+            A_inv[:] = np.linalg.inv(A + δ * Eii)
+
     return A + δ * Eii
 
 
-def update_off_diagonal(A,S, i, j, lambda_l0 = 0.2):
+def update_off_diagonal(A, S, i, j, lambda_l0=0.2, A_inv=None):
     d = S.shape[0]
+    old_aij = A[i, j]
+    old_aji = A[j, i]
     A[i, j] = A[j, i] = 0.0
+
+    # Update A_inv for zeroing via Sherman–Morrison — O(d²)
+    if A_inv is not None:
+        ok = True
+        if old_aij != 0.0:
+            ok = _sm_update_A_inv(A_inv, i, j, -old_aij)
+        if ok and old_aji != 0.0:
+            ok = _sm_update_A_inv(A_inv, j, i, -old_aji)
+        if not ok:
+            A_inv[:] = np.linalg.inv(A)
+
     Δ, Δ_bar = -np.inf, -np.inf
     # try direction i→j
     A_ij = A.copy()
     Eij = np.eye(d)[i][:, None] * np.eye(d)[j][None, :]
     if is_DAG(A_ij + Eij):
-        δ_t = delta_star(A, S, i, j)
+        δ_t = delta_star(A, S, i, j, A_inv=A_inv)
         Δ = f(A, S) - f(A + δ_t * Eij, S) - lambda_l0
     # try direction j→i
     A_ji = A.copy()
     Eji = np.eye(d)[j][:, None] * np.eye(d)[i][None, :]
     if is_DAG(A_ji + Eji):
-        δ_bar_t = delta_star(A, S, j, i)
+        δ_bar_t = delta_star(A, S, j, i, A_inv=A_inv)
         Δ_bar = f(A, S) - f(A + δ_bar_t * Eji, S) - lambda_l0
 
     if Δ == -np.inf and Δ_bar == -np.inf:
-        print("DAG/k constraint, continue")
         return A
 
     if Δ < 0 and Δ_bar < 0:
-        # print("Δ & Δ_bar < 0, continue")
         return A
 
-    # choose better direction
+    # choose better direction and update A_inv — O(d²)
     if Δ > Δ_bar:
+        if A_inv is not None:
+            if not _sm_update_A_inv(A_inv, i, j, δ_t):
+                A_inv[:] = np.linalg.inv(A + δ_t * Eij)
         A = A + δ_t * Eij
     else:
+        if A_inv is not None:
+            if not _sm_update_A_inv(A_inv, j, i, δ_bar_t):
+                A_inv[:] = np.linalg.inv(A + δ_bar_t * Eji)
         A = A + δ_bar_t * Eji
     return A
 
 
-def dag_coordinate_descent_l0(S, T=100, seed=0, threshold=0.05, lambda_l0 = 0.2):
+def dag_coordinate_descent_l0(
+    S,
+    T=100,
+    seed=0,
+    threshold=0.05,
+    lambda_l0=0.2,
+    return_history=False,
+    A_init=None,
+):
     """
     Simplified DAG-Constrained Coordinate Descent.
-    Returns (A, G, f(A))
+    Returns:
+        - (A, G, f(A)) when return_history=False (default)
+        - (A, G, f(A), history) when return_history=True
+
+    history records objective values f(A_t, S) after each iteration t.
     """
     np.random.seed(seed)
     d = S.shape[0]
-    A = np.eye(d)
+    A = A_init.copy() if A_init is not None else np.eye(d)
+    history = []
+
+    A_inv = np.linalg.inv(A)
 
     for t in range(T):
         i, j = np.random.choice(d, 2, replace=True)
 
         if i == j:
-            A = update_diagonal(A, S, i)
+            A = update_diagonal(A, S, i, A_inv=A_inv)
         else:
-            A = update_off_diagonal(A, S, i, j, lambda_l0)
+            A = update_off_diagonal(A, S, i, j, lambda_l0, A_inv=A_inv)
+
+        history.append(f(A, S))
 
     G = weight_to_adjacency(A, threshold)
-    return A, G, f(A, S)
+    final_obj = history[-1] if len(history) > 0 else f(A, S)
+
+    if return_history:
+        return A, G, final_obj, history
+    return A, G, final_obj
 
 
 
@@ -213,13 +297,14 @@ def dag_coordinate_descent_l0_epoch(
     tol=1e-4,
     patience=10,
     min_epochs=50,
-    verbose=False
+    verbose=False,
+    A_init=None,
 ):
     np.random.seed(seed)
     d = S.shape[0]
 
     # initialization
-    A = np.eye(d)
+    A = A_init.copy() if A_init is not None else np.eye(d)
 
     # unordered edge pairs
     edge_pairs = [(i, j) for i in range(d) for j in range(i + 1, d)]
@@ -229,19 +314,21 @@ def dag_coordinate_descent_l0_epoch(
     prev_f = f(A, S)
 
     for epoch in range(1, n_epochs + 1):
+        # Recompute A_inv each epoch for numerical stability — O(d³) once
+        A_inv = np.linalg.inv(A)
 
         # ============================
         # Block 1: structure block
         # ============================
         np.random.shuffle(edge_pairs)
         for (i, j) in edge_pairs:
-            A = update_off_diagonal(A, S, i, j, lambda_l0)
+            A = update_off_diagonal(A, S, i, j, lambda_l0, A_inv=A_inv)
 
         # ============================
         # Block 2: scale block
         # ============================
         for i in range(d):
-            A = update_diagonal(A, S, i)
+            A = update_diagonal(A, S, i, A_inv=A_inv)
 
         # ============================
         # Epoch evaluation

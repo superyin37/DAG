@@ -1,0 +1,4 @@
+d,algorithm,n_total,n_ok,mec_match_mean,cpdag_shd_mean,runtime_sec_mean,status_counts
+10,cd_A,1,1,0.0,15.0,10.576357699930668,{'ok': 1}
+20,cd_A,1,1,0.0,62.0,29.273471999913454,{'ok': 1}
+30,cd_A,1,1,0.0,140.0,99.18248560000211,{'ok': 1}

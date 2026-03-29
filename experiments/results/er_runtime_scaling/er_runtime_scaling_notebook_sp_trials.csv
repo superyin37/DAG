@@ -1,0 +1,4 @@
+d,trial_id,seed,algorithm,status,runtime_sec,mec_match,cpdag_shd,score_start,score_end,score_delta,score_rel_change,message
+10,1,89250953,sp,skipped,,,,,,,,d=10 > sp_max_d=8
+20,1,773956048,sp,skipped,,,,,,,,d=20 > sp_max_d=8
+30,1,654571518,sp,skipped,,,,,,,,d=30 > sp_max_d=8

@@ -1,0 +1,4 @@
+d,trial_id,seed,algorithm,status,runtime_sec,mec_match,cpdag_shd,score_start,score_end,score_delta,score_rel_change,message
+10,1,89250953,ges,ok,2.5121828999836,0.0,3.0,,,,,
+20,1,773956048,ges,ok,27.442997500067577,0.0,0.0,,,,,
+30,1,654571518,ges,ok,137.28817970003,0.0,13.0,,,,,
