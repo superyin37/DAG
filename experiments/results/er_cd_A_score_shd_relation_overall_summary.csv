@@ -1,0 +1,2 @@
+﻿trials,score_mean,score_std,true_score_mean,score_gap_true_mean,score_gap_true_std,shd_mean,shd_std,mec_rate,runtime_sec_mean
+100,52.63243691902574,0.46036755257432815,59.08439686836745,-6.451959949341708,0.46036755257432815,17.23,6.597910596728651,0.01,31.000044682994485

@@ -22,11 +22,19 @@ if REPO_ROOT not in sys.path:
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-from MEC import is_in_markov_equiv_class
+from MEC import is_in_markov_equiv_class, get_skeleton, find_v_structures
 from synthetic_dataset import SyntheticDataset
 from coordinate_descent.coordinate0 import dag_coordinate_descent_l0_epoch as cd_A
 from coordinate_descent.cd_B import dag_coordinate_descent_B_epoch as cd_B
 from coordinate_descent.cd_B_Omega import dag_coordinate_descent_BOmega_epoch as cd_BOmega
+
+try:
+    TOOLBOX_ROOT = os.path.join(REPO_ROOT, "toolbox")
+    if TOOLBOX_ROOT not in sys.path:
+        sys.path.append(TOOLBOX_ROOT)
+    from cdt.metrics import SHD_CPDAG as cdt_shd_cpdag
+except Exception:
+    cdt_shd_cpdag = None
 
 
 @dataclass
@@ -38,6 +46,7 @@ class TrialResult:
     mec_match: int
     exact_match: int
     shd: int
+    cpdag_shd: float
     precision: float
     recall: float
     f1: float
@@ -72,6 +81,24 @@ def precision_recall_f1(G_true: np.ndarray, G_est: np.ndarray) -> Tuple[float, f
         f1 = 2.0 * precision * recall / (precision + recall)
 
     return float(precision), float(recall), float(f1)
+
+
+def cpdag_shd_score(G_true: np.ndarray, G_est: np.ndarray) -> float:
+    if cdt_shd_cpdag is not None:
+        try:
+            return float(cdt_shd_cpdag(G_true.astype(int), G_est.astype(int)))
+        except Exception:
+            pass
+
+    skel_true = get_skeleton(G_true)
+    skel_est = get_skeleton(G_est)
+    skeleton_diff = int(np.sum(np.abs(skel_true - skel_est)) // 2)
+
+    v_true = find_v_structures(G_true)
+    v_est = find_v_structures(G_est)
+    v_diff = len(v_true.symmetric_difference(v_est))
+
+    return float(skeleton_diff + v_diff)
 
 
 def run_one_trial(
@@ -114,6 +141,7 @@ def run_one_trial(
     t1 = time.perf_counter()
 
     prec, rec, f1 = precision_recall_f1(G_true, G_A)
+    cpdag_shd = cpdag_shd_score(G_true, G_A)
     results.append(
         TrialResult(
             trial_id=trial_id,
@@ -123,6 +151,7 @@ def run_one_trial(
             mec_match=int(is_in_markov_equiv_class(G_true, G_A)),
             exact_match=int(np.array_equal(G_true, G_A)),
             shd=shd_score(G_true, G_A),
+            cpdag_shd=cpdag_shd,
             precision=prec,
             recall=rec,
             f1=f1,
@@ -150,6 +179,7 @@ def run_one_trial(
     t1 = time.perf_counter()
 
     prec, rec, f1 = precision_recall_f1(G_true, G_B)
+    cpdag_shd = cpdag_shd_score(G_true, G_B)
     results.append(
         TrialResult(
             trial_id=trial_id,
@@ -159,6 +189,7 @@ def run_one_trial(
             mec_match=int(is_in_markov_equiv_class(G_true, G_B)),
             exact_match=int(np.array_equal(G_true, G_B)),
             shd=shd_score(G_true, G_B),
+            cpdag_shd=cpdag_shd,
             precision=prec,
             recall=rec,
             f1=f1,
@@ -189,6 +220,7 @@ def run_one_trial(
     t1 = time.perf_counter()
 
     prec, rec, f1 = precision_recall_f1(G_true, G_BOmega)
+    cpdag_shd = cpdag_shd_score(G_true, G_BOmega)
     results.append(
         TrialResult(
             trial_id=trial_id,
@@ -198,6 +230,7 @@ def run_one_trial(
             mec_match=int(is_in_markov_equiv_class(G_true, G_BOmega)),
             exact_match=int(np.array_equal(G_true, G_BOmega)),
             shd=shd_score(G_true, G_BOmega),
+            cpdag_shd=cpdag_shd,
             precision=prec,
             recall=rec,
             f1=f1,
@@ -223,6 +256,8 @@ def summarize(results: List[TrialResult]) -> Dict[str, Dict[str, float]]:
             "exact_rate": float(np.mean([r.exact_match for r in subset])),
             "shd_mean": float(np.mean([r.shd for r in subset])),
             "shd_std": float(np.std([r.shd for r in subset])),
+            "cpdag_shd_mean": float(np.mean([r.cpdag_shd for r in subset])),
+            "cpdag_shd_std": float(np.std([r.cpdag_shd for r in subset])),
             "precision_mean": float(np.mean([r.precision for r in subset])),
             "recall_mean": float(np.mean([r.recall for r in subset])),
             "f1_mean": float(np.mean([r.f1 for r in subset])),
@@ -310,7 +345,8 @@ def main() -> None:
         msg = []
         for r in trial_results:
             msg.append(
-                f"{r.algorithm}: MEC={r.mec_match}, SHD={r.shd}, F1={r.f1:.3f}, time={r.runtime_sec:.2f}s"
+                f"{r.algorithm}: MEC={r.mec_match}, SHD={r.shd}, "
+                f"CPDAG-SHD={r.cpdag_shd:.0f}, F1={r.f1:.3f}, time={r.runtime_sec:.2f}s"
             )
         print(f"[Trial {idx:03d}/{args.trials}] seed={int(seed)} | " + " | ".join(msg))
 
@@ -324,6 +360,7 @@ def main() -> None:
         print(
             f"{alg:<10} | MEC={s['mec_rate']:.3f} | Exact={s['exact_rate']:.3f} "
             f"| SHD={s['shd_mean']:.2f}±{s['shd_std']:.2f} "
+            f"| CPDAG-SHD={s['cpdag_shd_mean']:.2f}±{s['cpdag_shd_std']:.2f} "
             f"| F1={s['f1_mean']:.3f} | Time={s['runtime_mean_sec']:.2f}s"
         )
 

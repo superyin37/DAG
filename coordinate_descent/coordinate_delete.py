@@ -9,7 +9,6 @@ from numpy.linalg import inv
 from scipy.linalg import sqrtm
 
 import numpy as np
-from scipy.linalg import expm
 
 
 # -----------------------------
@@ -49,24 +48,34 @@ def delta_star(A, S, i, j,eps = 1e-6):
 
 def is_DAG(W, tol=1e-8, k=None):
     """
-    Acyclicity check using NOTEARS constraint:
-        h(W) = tr(exp(W ∘ W)) - d = 0
-        True if W represents a DAG, False otherwise
+    DAG check via Kahn's topological sort.  O(d + E).
     """
-    W = W.copy()
-    np.fill_diagonal(W, 0.0)
     d = W.shape[0]
+    mask = np.abs(W) > tol
+    np.fill_diagonal(mask, False)
 
-    # NOTEARS acyclicity constraint
-    h = np.trace(expm(W * W)) - d
-    is_dag = abs(h) < tol
+    if k is not None and int(mask.sum()) > k:
+        return False
 
-    # Edge count check (nonzero entries)
-    if k is not None:
-        edge_count = np.sum(np.abs(W) > tol)
-        return is_dag and (edge_count <= k)
-    else:
-        return is_dag
+    adj = [set() for _ in range(d)]
+    rows, cols = np.where(mask)
+    for i, j in zip(rows.tolist(), cols.tolist()):
+        adj[i].add(j)
+
+    in_deg = [0] * d
+    for u in range(d):
+        for v in adj[u]:
+            in_deg[v] += 1
+    queue = [u for u in range(d) if in_deg[u] == 0]
+    count = 0
+    while queue:
+        u = queue.pop()
+        count += 1
+        for v in adj[u]:
+            in_deg[v] -= 1
+            if in_deg[v] == 0:
+                queue.append(v)
+    return count == d
 
 
 # def is_DAG(B):

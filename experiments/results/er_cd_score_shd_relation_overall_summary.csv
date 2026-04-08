@@ -1,0 +1,2 @@
+﻿algorithm,objective_name,budget_type,budget_requested,trials,score_mean,score_std,true_score_mean,score_gap_true_mean,score_gap_true_std,shd_mean,shd_std,mec_rate,runtime_sec_mean,n_steps_run_mean
+cd_A,f_A,iter,100000,100,57.274371601177656,0.4639552252737746,61.515713474878936,-4.241341873701285,0.4639552252737732,26.6,8.43872746402686,0.0,53.54284581399756,100000.0

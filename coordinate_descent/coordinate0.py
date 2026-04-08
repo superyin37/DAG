@@ -8,7 +8,6 @@ from numpy.linalg import inv
 from scipy.linalg import sqrtm
 
 import numpy as np
-from scipy.linalg import expm
 
 
 
@@ -53,24 +52,34 @@ def delta_star(A, S, i, j, A_inv=None, eps=1e-6):
 
 def is_DAG(W, tol=1e-8, k=None):
     """
-    Acyclicity check using NOTEARS constraint:
-        h(W) = tr(exp(W ∘ W)) - d = 0
-        True if W represents a DAG, False otherwise
+    DAG check via Kahn's topological sort.  O(d + E).
     """
-    W = W.copy()
-    np.fill_diagonal(W, 0.0)
     d = W.shape[0]
+    mask = np.abs(W) > tol
+    np.fill_diagonal(mask, False)
 
-    # NOTEARS acyclicity constraint
-    h = np.trace(expm(W * W)) - d
-    is_dag = abs(h) < tol
+    if k is not None and int(mask.sum()) > k:
+        return False
 
-    # Edge count check (nonzero entries)
-    if k is not None:
-        edge_count = np.sum(np.abs(W) > tol)
-        return is_dag and (edge_count <= k)
-    else:
-        return is_dag
+    adj = [set() for _ in range(d)]
+    rows, cols = np.where(mask)
+    for i, j in zip(rows.tolist(), cols.tolist()):
+        adj[i].add(j)
+
+    in_deg = [0] * d
+    for u in range(d):
+        for v in adj[u]:
+            in_deg[v] += 1
+    queue = [u for u in range(d) if in_deg[u] == 0]
+    count = 0
+    while queue:
+        u = queue.pop()
+        count += 1
+        for v in adj[u]:
+            in_deg[v] -= 1
+            if in_deg[v] == 0:
+                queue.append(v)
+    return count == d
 
 
 def weight_to_adjacency(W, threshold=0.05):
@@ -86,6 +95,11 @@ def weight_to_adjacency(W, threshold=0.05):
     G = (np.abs(W) > threshold).astype(int)
     np.fill_diagonal(G, 0)
     return G
+
+
+def _graph_snapshot(A, threshold=0.05):
+    """Binary adjacency snapshot stored compactly for history logging."""
+    return weight_to_adjacency(A, threshold).astype(np.uint8, copy=False)
 
 
 # -----------------------------
@@ -252,7 +266,13 @@ def dag_coordinate_descent_l0(
     threshold=0.05,
     lambda_l0=0.2,
     return_history=False,
+    return_graph_history=False,
     A_init=None,
+    early_stop=False,
+    check_every=None,
+    tol=1e-4,
+    patience=10,
+    min_steps=None,
 ):
     """
     Simplified DAG-Constrained Coordinate Descent.
@@ -261,14 +281,31 @@ def dag_coordinate_descent_l0(
         - (A, G, f(A), history) when return_history=True
 
     history records objective values f(A_t, S) after each iteration t.
+    graph_history records binary adjacency snapshots G_t after each iteration t.
+
+    Early stopping (early_stop=True):
+        Every *check_every* steps (default d*(d+1)//2), compute relative
+        improvement.  If rel_improve < tol for *patience* consecutive
+        checks after *min_steps* steps, stop early.
     """
     np.random.seed(seed)
     d = S.shape[0]
     A = A_init.copy() if A_init is not None else np.eye(d)
     history = []
+    graph_history_list = [] if return_graph_history else None
 
     A_inv = np.linalg.inv(A)
 
+    # early stopping state
+    if early_stop:
+        if check_every is None:
+            check_every = d * (d + 1) // 2
+        if min_steps is None:
+            min_steps = check_every * 10
+        prev_check_f = f(A, S)
+        no_improve_count = 0
+
+    actual_T = T
     for t in range(T):
         i, j = np.random.choice(d, 2, replace=True)
 
@@ -278,14 +315,106 @@ def dag_coordinate_descent_l0(
             A = update_off_diagonal(A, S, i, j, lambda_l0, A_inv=A_inv)
 
         history.append(f(A, S))
+        if graph_history_list is not None:
+            graph_history_list.append(_graph_snapshot(A, threshold))
+
+        # early stopping check
+        if early_stop and (t + 1) % check_every == 0:
+            curr_f = history[-1]
+            rel_improve = (prev_check_f - curr_f) / max(1.0, abs(prev_check_f))
+            prev_check_f = curr_f
+            if t + 1 >= min_steps:
+                if rel_improve < tol:
+                    no_improve_count += 1
+                else:
+                    no_improve_count = 0
+                if no_improve_count >= patience:
+                    actual_T = t + 1
+                    break
 
     G = weight_to_adjacency(A, threshold)
     final_obj = history[-1] if len(history) > 0 else f(A, S)
 
+    if graph_history_list is not None:
+        graph_history = np.array(graph_history_list, dtype=np.uint8)
+    else:
+        graph_history = None
+
+    if return_history and return_graph_history:
+        return A, G, final_obj, history, graph_history
     if return_history:
         return A, G, final_obj, history
+    if return_graph_history:
+        return A, G, final_obj, graph_history
     return A, G, final_obj
 
+
+def dag_coordinate_descent_l0_multi(
+    S,
+    T=100,
+    seed=0,
+    threshold=0.05,
+    lambda_l0=0.2,
+    n_restarts=10,
+    return_history=False,
+    A_init=None,
+    early_stop=False,
+    check_every=None,
+    tol=1e-4,
+    patience=10,
+    min_steps=None,
+):
+    """
+    Multi-restart DAG-Constrained Coordinate Descent.
+
+    Runs dag_coordinate_descent_l0 *n_restarts* times with different seeds
+    and returns the result with the lowest objective value f(A, S).
+
+    Early stopping parameters are forwarded to each individual run.
+
+    Returns:
+        - (A, G, f(A)) when return_history=False (default)
+        - (A, G, f(A), history) when return_history=True
+          where history is from the best run.
+    """
+    rng = np.random.RandomState(seed)
+    seeds = rng.randint(0, 2**31, size=n_restarts)
+
+    best_A = None
+    best_G = None
+    best_obj = np.inf
+    best_history = None
+
+    for s in seeds:
+        result = dag_coordinate_descent_l0(
+            S,
+            T=T,
+            seed=int(s),
+            threshold=threshold,
+            lambda_l0=lambda_l0,
+            return_history=return_history,
+            A_init=A_init,
+            early_stop=early_stop,
+            check_every=check_every,
+            tol=tol,
+            patience=patience,
+            min_steps=min_steps,
+        )
+        if return_history:
+            A_run, G_run, obj_run, history_run = result
+        else:
+            A_run, G_run, obj_run = result
+            history_run = None
+
+        if obj_run < best_obj:
+            best_A = A_run
+            best_G = G_run
+            best_obj = obj_run
+            best_history = history_run
+
+    if return_history:
+        return best_A, best_G, best_obj, best_history
+    return best_A, best_G, best_obj
 
 
 def dag_coordinate_descent_l0_epoch(
@@ -298,6 +427,8 @@ def dag_coordinate_descent_l0_epoch(
     patience=10,
     min_epochs=50,
     verbose=False,
+    return_graph_history=False,
+    graph_history_granularity="epoch",
     A_init=None,
 ):
     np.random.seed(seed)
@@ -308,10 +439,22 @@ def dag_coordinate_descent_l0_epoch(
 
     # unordered edge pairs
     edge_pairs = [(i, j) for i in range(d) for j in range(i + 1, d)]
+    updates_per_epoch = len(edge_pairs) + d
 
     history = []
+    if return_graph_history:
+        if graph_history_granularity == "epoch":
+            graph_history = np.empty((n_epochs, d, d), dtype=np.uint8)
+        elif graph_history_granularity == "update":
+            graph_history = np.empty((n_epochs * updates_per_epoch, d, d), dtype=np.uint8)
+        else:
+            raise ValueError("graph_history_granularity must be 'epoch' or 'update'.")
+    else:
+        graph_history = None
     no_improve_count = 0
     prev_f = f(A, S)
+    curr_f = prev_f
+    graph_step = 0
 
     for epoch in range(1, n_epochs + 1):
         # Recompute A_inv each epoch for numerical stability — O(d³) once
@@ -323,18 +466,26 @@ def dag_coordinate_descent_l0_epoch(
         np.random.shuffle(edge_pairs)
         for (i, j) in edge_pairs:
             A = update_off_diagonal(A, S, i, j, lambda_l0, A_inv=A_inv)
+            if graph_history is not None and graph_history_granularity == "update":
+                graph_history[graph_step] = _graph_snapshot(A, threshold)
+                graph_step += 1
 
         # ============================
         # Block 2: scale block
         # ============================
         for i in range(d):
             A = update_diagonal(A, S, i, A_inv=A_inv)
+            if graph_history is not None and graph_history_granularity == "update":
+                graph_history[graph_step] = _graph_snapshot(A, threshold)
+                graph_step += 1
 
         # ============================
         # Epoch evaluation
         # ============================
         curr_f = f(A, S)
         history.append(curr_f)
+        if graph_history is not None and graph_history_granularity == "epoch":
+            graph_history[epoch - 1] = _graph_snapshot(A, threshold)
 
         rel_improve = (prev_f - curr_f) / max(1.0, abs(prev_f))
 
@@ -365,4 +516,12 @@ def dag_coordinate_descent_l0_epoch(
         prev_f = curr_f
 
     G = weight_to_adjacency(A, threshold)
+    if graph_history is not None:
+        if graph_history_granularity == "epoch":
+            graph_history = graph_history[: len(history)]
+        else:
+            graph_history = graph_history[:graph_step]
+
+    if return_graph_history:
+        return A, G, curr_f, history, graph_history
     return A, G, curr_f, history

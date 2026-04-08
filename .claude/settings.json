@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la \"c:/Users/super/DAG/experiments/results/er_cd_score_shd_relation\"*.csv)",
+      "Bash(PYTHONIOENCODING=utf-8 python3)",
+      "Bash(ls -la c:/Users/super/DAG/experiments/results/degree_lambda_benchmark*.csv)",
+      "Bash(python -c ':*)",
+      "Bash(python -c \"from coordinate_descent.coordinate0 import dag_coordinate_descent_l0, dag_coordinate_descent_l0_multi; print\\('import ok'\\)\")"
+    ]
+  }
+}

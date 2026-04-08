@@ -1,0 +1,25 @@
+d,trial_id,seed,algorithm,status,runtime_sec,message
+5,1,89250953,cd_A,ok,3.2308851000852883,
+5,1,89250953,golem,unavailable,nan,No module named 'golem'
+5,1,89250953,sp,ok,0.010853799991309643,
+5,1,89250953,ges,unavailable,nan,No module named 'causallearn'
+5,1,89250953,notears,ok,12.79040120006539,
+5,1,89250953,fges,ok,1.5724388000089675,
+5,2,773956048,cd_A,ok,1.1998767999466509,
+5,2,773956048,golem,unavailable,nan,No module named 'golem'
+5,2,773956048,sp,ok,0.00505509995855391,
+5,2,773956048,ges,unavailable,nan,No module named 'causallearn'
+5,2,773956048,notears,ok,3.0473712000530213,
+5,2,773956048,fges,ok,0.05420130002312362,
+10,1,654571518,cd_A,ok,17.740310499910265,
+10,1,654571518,golem,unavailable,nan,No module named 'golem'
+10,1,654571518,sp,skipped,nan,d=10 > sp_max_d=8
+10,1,654571518,ges,unavailable,nan,No module named 'causallearn'
+10,1,654571518,notears,ok,66.22190189990215,
+10,1,654571518,fges,ok,0.08906819997355342,
+10,2,438878439,cd_A,ok,18.195223900023848,
+10,2,438878439,golem,unavailable,nan,No module named 'golem'
+10,2,438878439,sp,skipped,nan,d=10 > sp_max_d=8
+10,2,438878439,ges,unavailable,nan,No module named 'causallearn'
+10,2,438878439,notears,ok,139.47972299996763,
+10,2,438878439,fges,ok,0.10311089991591871,

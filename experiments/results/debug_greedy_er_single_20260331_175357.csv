@@ -1,0 +1,3 @@
+trial_id,seed,algorithm,d,n_samples,degree,noise_type,lambda_l0,threshold,T,runtime_sec,score,score_true_A,score_gap_true,mec_match,shd,n_edges_true,n_edges_est,history_len,monotone_increases
+single,41,cd_A_noepoch,10,200000,2.0,gaussian_nv,0.1,0.05,15000,4.45781120005995,17.589085748967513,18.793450148140632,-1.2043643991731194,0,2,10,10,15000,0
+single,41,greedy_pair,10,200000,2.0,gaussian_nv,0.1,0.05,15000,29.52145399991423,17.741867901891247,18.793450148140632,-1.0515822462493851,0,14,10,14,15000,0

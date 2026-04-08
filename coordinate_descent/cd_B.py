@@ -1,6 +1,5 @@
 import numpy as np
-from scipy.linalg import expm
-from typing import Optional
+from typing import Optional, List
 
 # ============================================================
 # B-formulation utilities (Transpose-consistent)
@@ -39,20 +38,34 @@ def f_B(B: np.ndarray, S: np.ndarray, eps: float = 1e-12) -> float:
 
 def is_DAG(W: np.ndarray, tol: float = 1e-8, k: Optional[int] = None) -> bool:
     """
-    DAG check via NOTEARS constraint:
-        h(W) = tr(exp(W ∘ W)) - d
+    DAG check via Kahn's topological sort.  O(d + E).
     """
-    W = W.copy()
-    np.fill_diagonal(W, 0.0)
     d = W.shape[0]
+    mask = np.abs(W) > tol
+    np.fill_diagonal(mask, False)
 
-    h = np.trace(expm(W * W)) - d
-    is_dag = abs(h) < tol
+    if k is not None and int(mask.sum()) > k:
+        return False
 
-    if k is not None:
-        edge_count = int(np.sum(np.abs(W) > tol))
-        return is_dag and (edge_count <= k)
-    return is_dag
+    adj: List[set] = [set() for _ in range(d)]
+    rows, cols = np.where(mask)
+    for i, j in zip(rows.tolist(), cols.tolist()):
+        adj[i].add(j)
+
+    in_deg = [0] * d
+    for u in range(d):
+        for v in adj[u]:
+            in_deg[v] += 1
+    queue = [u for u in range(d) if in_deg[u] == 0]
+    count = 0
+    while queue:
+        u = queue.pop()
+        count += 1
+        for v in adj[u]:
+            in_deg[v] -= 1
+            if in_deg[v] == 0:
+                queue.append(v)
+    return count == d
 
 
 def weight_to_adjacency(W: np.ndarray, threshold: float = 0.05) -> np.ndarray:

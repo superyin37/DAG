@@ -1,5 +1,5 @@
 """
-Benchmark runtime of cd_A / GOLEM / SP / GES on random ER graphs for multiple d.
+Benchmark runtime of cd_A / GOLEM / SP / GES / NOTEARS / FGES on random ER graphs for multiple d.
 
 Usage example:
     python experiments/run_er_graph_runtime_scaling.py --trials 5 --n 5000 --d-list 5,10,15,20
@@ -46,6 +46,30 @@ except Exception as _ges_err:
     HAS_GES = False
     GES_IMPORT_ERROR = _ges_err
 
+NOTEARS_IMPORT_ERROR = None
+try:
+    from castle.algorithms import Notears
+
+    HAS_NOTEARS = True
+except Exception as _notears_err:
+    HAS_NOTEARS = False
+    NOTEARS_IMPORT_ERROR = _notears_err
+
+FGES_IMPORT_ERROR = None
+try:
+    # py-tetrad requires JAVA_HOME; set a fallback if not in environment
+    if not os.environ.get("JAVA_HOME"):
+        _jdk_candidate = r"C:\Program Files\Microsoft\jdk-21.0.10.7-hotspot"
+        if os.path.isdir(_jdk_candidate):
+            os.environ["JAVA_HOME"] = _jdk_candidate
+    import pandas as pd
+    import pytetrad.tools.TetradSearch as ts
+
+    HAS_FGES = True
+except Exception as _fges_err:
+    HAS_FGES = False
+    FGES_IMPORT_ERROR = _fges_err
+
 
 @dataclass
 class RuntimeRow:
@@ -90,6 +114,31 @@ def ges_graph_to_adj(g: np.ndarray) -> np.ndarray:
                 A[j, i] = int(b != 0)
 
     np.fill_diagonal(A, 0)
+    return A
+
+
+def fges_graph_to_adj(g) -> np.ndarray:
+    """Convert FGES output DataFrame (Tetrad encoding) to binary adjacency matrix.
+
+    Tetrad endpoint codes: 1=tail, 2=arrowhead, 3=circle.
+    Directed edge i->j: g[i,j]=1 (tail), g[j,i]=2 (arrow).
+    Undirected edge i-j: g[i,j]=1, g[j,i]=1.
+    Any non-zero entry means the edge exists on that side.
+    We treat arrowhead (2) at j as i->j; tail-tail as undirected (both directions).
+    """
+    arr = np.array(g, dtype=int)
+    d = arr.shape[0]
+    A = np.zeros((d, d), dtype=int)
+    for i in range(d):
+        for j in range(d):
+            if i == j:
+                continue
+            # directed edge i->j: arr[i,j]==1 (tail) and arr[j,i]==2 (arrow)
+            if arr[i, j] == 1 and arr[j, i] == 2:
+                A[i, j] = 1
+            # undirected edge: both are tails (1) or both are circles (3)
+            elif arr[i, j] != 0 and arr[j, i] != 0 and arr[i, j] == arr[j, i]:
+                A[i, j] = 1
     return A
 
 
@@ -184,6 +233,23 @@ def run_algorithm(
                 return "unavailable", np.nan, str(GES_IMPORT_ERROR)
             ges_rec = ges_fit(X)
             _ = ges_graph_to_adj(ges_rec["G"].graph)
+
+        elif algorithm == "notears":
+            if not HAS_NOTEARS:
+                return "unavailable", np.nan, str(NOTEARS_IMPORT_ERROR)
+            model = Notears(lambda1=args.notears_lambda1, loss_type="l2", w_threshold=args.threshold)
+            model.learn(X)
+
+        elif algorithm == "fges":
+            if not HAS_FGES:
+                return "unavailable", np.nan, str(FGES_IMPORT_ERROR)
+            df = pd.DataFrame(X, columns=[f"x{i}" for i in range(X.shape[1])])
+            df = df.astype({col: "float64" for col in df.columns})
+            search = ts.TetradSearch(df)
+            search.set_verbose(False)
+            search.use_sem_bic()
+            search.run_fges()
+            _ = fges_graph_to_adj(search.get_graph_to_matrix())
 
         else:
             return "failed", np.nan, f"Unknown algorithm: {algorithm}"
@@ -281,6 +347,8 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--sp-max-d", type=int, default=8, help="Skip SP when d > sp_max_d.")
 
+    parser.add_argument("--notears-lambda1", type=float, default=0.1)
+
     parser.add_argument("--outdir", type=str, default=os.path.join("experiments", "results"))
     parser.add_argument("--tag", type=str, default="er_runtime_scaling")
 
@@ -295,12 +363,12 @@ def main() -> None:
     rng = np.random.default_rng(args.seed)
 
     all_rows: List[RuntimeRow] = []
-    algorithms = ["cd_A", "golem", "sp", "ges"]
+    algorithms = ["cd_A", "golem", "sp", "ges", "notears", "fges"]
 
     print("=" * 88)
-    print("ER-Graph Runtime Scaling: cd_A / GOLEM / SP / GES")
+    print("ER-Graph Runtime Scaling: cd_A / GOLEM / SP / GES / NOTEARS / FGES")
     print(f"d_list={d_values}, trials_per_d={args.trials}, n={args.n}, degree={args.degree}, noise={args.noise_type}")
-    print(f"HAS_GOLEM={HAS_GOLEM}, HAS_GES={HAS_GES}, sp_max_d={args.sp_max_d}")
+    print(f"HAS_GOLEM={HAS_GOLEM}, HAS_GES={HAS_GES}, HAS_NOTEARS={HAS_NOTEARS}, HAS_FGES={HAS_FGES}, sp_max_d={args.sp_max_d}")
     print("=" * 88)
 
     for d in d_values:

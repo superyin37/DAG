@@ -1,272 +1,400 @@
-# 貪欲座標降下法による DAG 学習（A-定式化）
+# Greedy Coordinate Descent for A-formulation
 
-## 1. 問題設定
+## 1. 背景設定
 
-### 1.1 構造方程式モデル
+### 1.1 A-formulation
 
-$d$ 次元の観測データ $X \in \mathbb{R}^d$ が線形構造方程式モデル（SEM）に従うとする：
-
-$$X = A^{-1} N, \quad N \sim \mathcal{N}(0, I)$$
-
-ここで $A$ は下三角成分に DAG の辺の重みを持つ行列である。このとき $X$ の精度行列は $\Omega = A^T A$ となる。
-
-### 1.2 目的関数
-
-$n$ 個の観測から得られる標本共分散行列 $S = \frac{1}{n} X X^T$ のもとで、負の対数尤度（定数を除く）は
-
-$$f(A) = -2 \log \det A + \operatorname{tr}(A^T S A)$$
-
-で与えられる。エッジの疎性を制御する $\ell_0$ 正則化項 $\lambda \cdot \|B\|_0$ を加えた目的関数
-
-$$\min_{A \in \mathrm{DAG}} \; f(A) + \lambda \|A\|_{\mathrm{off},0}$$
-
-を最小化することが目標である。
-
-### 1.3 DAG 制約
-
-行列 $A$ の非対角成分 $A_{ij} \neq 0$ は辺 $i \to j$ を表す。$A$ が DAG に対応するとは、対応する有向グラフが有向閉路を含まないことである。
-
----
-
-## 2. 既存手法との比較
-
-本アルゴリズムは `coordinate0.py` の**ランダム座標降下法**を**貪欲選択**に置き換えたものである。
-
-| 手法 | 座標選択 | 1ステップのコスト |
-|------|----------|------------------|
-| ランダム CD（T-step） | 一様ランダム | $O(d^2)$ |
-| ランダム CD（epoch） | ランダム順列 | $O(d^4)$/epoch |
-| **貪欲 CD（T-step）** | 勾配最大ペア | $O(d^2)$ |
-| **貪欲 CD（epoch）** | 勾配降順ソート | $O(d^4)$/epoch |
-
-更新ステップ自体は同一であり、違いは**どのペアを選ぶか**のみである。
-
----
-
-## 3. アルゴリズムの概要
-
-### 3.1 T-step 版（`dag_greedy_A`）
-
-各ステップ $t = 0, 1, \ldots, T-1$ で：
-
-1. **勾配の計算**
-$$G^{(t)} = \nabla_A f(A^{(t)}) = -2(A^{(t)})^{-T} + 2SA^{(t)}$$
-
-2. **ペアの選択**（DAG 実行可能性条件のもとで）
-$$
-(i_t, j_t) \in \arg\max_{i < j} \max\!\left\{|G^{(t)}_{ij}|,\; |G^{(t)}_{ji}|\right\}
-$$
-
-3. **ゼロ化**
-$$A^{(t+1/2)} \leftarrow A^{(t)}, \quad A^{(t+1/2)}_{i_t j_t} = A^{(t+1/2)}_{j_t i_t} = 0$$
-
-4. **最適方向の選択と更新**
+$d$ 次元の確率変数ベクトル $X \in \mathbb{R}^d$ を
 
 $$
-\delta^*_{ij} = \arg\min_\delta f\!\left(A^{(t+1/2)} + \delta E_{ij}\right), \quad
-\Delta_{ij} = f(A^{(t+1/2)}) - f(A^{(t+1/2)} + \delta^*_{ij} E_{ij}) - \lambda
+X = A^{-1} N, \qquad N \sim \mathcal{N}(0, I)
 $$
 
-両方向について $\Delta_{ij}$, $\Delta_{ji}$ を計算し，より大きい方向に更新する。
+で表す。ここで $A$ は上手く並べ替えると三角化できる行列であり，非対角成分の有向構造が DAG を与える。
 
-### 3.2 Epoch 版（`dag_greedy_A_epoch`）
+サンプル共分散
 
-各 epoch で以下の 2 ブロックを実行する：
-
-- **Block 1（構造ブロック）**：全 $\binom{d}{2}$ ペアを勾配スコア降順に並べ替え，順番に `update_off_diagonal_greedy` を適用。
-- **Block 2（スケールブロック）**：全対角成分 $A_{ii}$ を最適化。
-
----
-
-## 4. 数学的導出
-
-### 4.1 座標の閉形式最適解
-
-$A^{(t+1/2)} + \delta E_{ij}$（$i \neq j$）に沿った 1 次元最小化の解は：
-
-$$c = S_{ii}, \quad b = (SA)_{ij}, \quad \alpha = (A^{-1})_{ji}$$
-
-$$D = (c + \alpha b)^2 - 4\alpha c(b - \alpha), \quad
-\delta^* = \frac{2(b - \alpha)}{-(c + \alpha b) - \sqrt{D}}$$
-
-これは $O(d)$ で計算できる（$A^{-1}$ がキャッシュされている場合）。
-
-### 4.2 目的関数の増分更新
-
-$A[i,j] \mathrel{+}= \delta$（ランク-1 摂動 $A \leftarrow A + \delta e_i e_j^T$）に対して：
-
-**行列式項**（行列式補題より）：
-$$\Delta(-2\log\det A) = -2\log(1 + \delta \alpha), \quad \alpha = A^{-1}[j,i]$$
-
-**トレース項**（$S$ が対称であることを利用）：
-$$\Delta\operatorname{tr}(A^T S A) = 2\delta (SA)_{ij} + \delta^2 S_{ii}$$
-
-ただし $(SA)_{ij}$ は，キャッシュ済みの $G$ から
 $$
-(SA)_{ij} = \frac{G_{ij} + 2A^{-1}[j,i]}{2}
+S = \frac{1}{n} X^\top X
 $$
-と $O(1)$ で回収できる。
 
-**合計**：$\Delta f = -2\log(1 + \delta\alpha) + 2\delta(SA)_{ij} + \delta^2 S_{ii}$
+に対して，本実装が最小化する滑らかな目的関数は
 
-この式により，`f(A, S)` を $O(d^2)$ で再計算することなく，改善量 $\Delta = -\Delta f - \lambda$ を **$O(1)$** で評価できる。
+$$
+f(A) = -2 \log \det A + \operatorname{tr}(A^\top S A)
+$$
 
-### 4.3 Sherman–Morrison による逆行列の更新
+である。さらに非対角成分の疎性を促すために，必要に応じて
 
-$A \leftarrow A + \delta e_i e_j^T$ のとき：
+$$
+F_\lambda(A) = f(A) + \lambda_{\ell_0} \|A\|_{\mathrm{off},0}
+$$
 
-$$A^{-1}_{\mathrm{new}} = A^{-1} + c \cdot (A^{-1}[:,i])(A^{-1}[j,:]), \quad c = \frac{-\delta}{1 + \delta A^{-1}[j,i]}$$
+を考える。
 
-更新コスト：**$O(d^2)$**（外積計算）。
+### 1.2 DAG 制約
 
-### 4.4 勾配行列の増分更新
-
-$G = -2A^{-T} + 2SA$ の変化量：
-
-**Term 1**（$-2A^{-T}$ の変化，SM 更新の転置）：
-$$\Delta G_{\mathrm{term1}} = -2c \cdot (A^{-1}[j,:])^T (A^{-1}[:,i])^T \quad \text{（ランク-1 外積，}O(d^2)\text{）}$$
-
-**Term 2**（$2SA$ の変化，$S$ 対称より第 $j$ 列のみ変化）：
-$$\Delta G_{\mathrm{term2}}[:,j] = 2\delta \cdot S[:,i] \quad \text{（列更新，}O(d)\text{）}$$
-
-これにより $G$ を毎ステップ $O(d^3)$ で再計算する必要がなくなり，**$O(d^2)$** での増分更新が可能になる。
+非対角成分 $A_{ij} \neq 0$ は有向辺 $i \to j$ を表す。したがって更新後の非対角部分が閉路を含まないことが必要である。本実装では隣接リスト `adj` を持ち，辺の追加時だけ Kahn のトポロジカルソートで DAG 性を判定する。
 
 ---
 
-## 5. キャッシュ管理
+## 2. 実装の全体像
 
-アルゴリズムは以下の 5 つの状態を常に同期して維持する：
+`cd_greedy_A.py` には次の 3 系統が実装されている。
 
-| キャッシュ | 内容 | 更新コスト |
-|-----------|------|-----------|
-| `A` | 現在の行列 | $O(1)$ |
-| `A_inv` | $A^{-1}$，SM 更新 | $O(d^2)$ |
-| `G` | 勾配 $\nabla_A f$，ランク-1 更新 | $O(d^2)$ |
-| `f_val` | $f(A)$，解析公式 | $O(1)$ |
-| `adj` | 有向辺の隣接リスト | $O(1)$ |
+| 関数 | 役割 | 特徴 |
+|---|---|---|
+| `dag_greedy_A` | T-step の主実装 | 非対角と対角を同じ候補集合で greedy に選ぶ |
+| `dag_greedy_A_directed` | T-step の off-diagonal のみ版 | 対角更新を含まない |
+| `dag_greedy_A_epoch` | epoch ベース版 | 旧来の pair-based 構造ブロック + 対角ブロック |
 
-これらはすべて `_rank1_update` 1 回の呼び出しで同時に更新される。SM の分母が数値的に不安定（$|1 + \delta\alpha| < 10^{-15}$）になった場合は，フォールバックとして `_recompute_all` により $O(d^3)$ で完全再計算を行う。
-
-Epoch 版では各 epoch 開始時に数値的安定性のため `A_inv`，`G`，`f_val`，`adj` をすべて再計算する。
+現行の中心実装は `dag_greedy_A` と `dag_greedy_A_directed` であり，どちらも共有関数 `_dag_greedy_A_impl(...)` を用いている。
 
 ---
 
-## 6. DAG 実行可能性の判定
+## 3. T-step 版アルゴリズム
 
-### 6.1 従来手法（NOTEARS）の問題点
+### 3.1 初期化
 
-既存コード（`coordinate0.py`）が使用している NOTEARS 制約：
+初期行列は
 
-$$h(W) = \operatorname{tr}(\exp(W \circ W)) - d = 0$$
+$$
+A^{(0)} = I_d
+$$
 
-は行列指数関数の計算を要し，**$O(d^3)$** のコストがかかる。これは連続最適化（勾配法）での微分可能な正則化のために設計されたものであり，2値の判定には過剰なコストである。
+または引数 `A_init` で与えられる。初期化時に次のキャッシュを一括で構成する。
 
-### 6.2 新手法：Kahn のトポロジカルソート
+- `A_inv = A^{-1}`
+- `G = -2A^{-T} + 2SA`
+- `f_state = [f(A)]`
+- `adj`: 非対角非零成分から作る隣接リスト
 
-辺 $i \to j$ を**一時的に追加**したうえで，グラフ全体に対して Kahn のアルゴリズムを実行する：
+### 3.2 1 ステップの流れ
 
-```
-is_dag_kahn(adj):
-    各ノードの入次数を計算
-    入次数 0 のノードをキューに追加
-    while キューが空でない:
-        ノード u をキューから取り出し，処理済みカウントをインクリメント
-        u の隣接ノード v の入次数を 1 減らし，0 になればキューに追加
-    return 処理済みカウント == d   # 全ノード処理できれば DAG
+`dag_greedy_A` の各ステップは次の通りである。
 
-can_add_edge(adj, i, j):
-    adj[i] に j を追加
-    result = is_dag_kahn(adj)
-    adj[i] から j を削除
-    return result
-```
+1. 現在の勾配
 
-不変量に一切依存せず，グラフの現在の状態に関わらず正しく動作する。
+$$
+G = \nabla_A f(A) = -2A^{-T} + 2SA
+$$
 
-計算量：**$O(d + E)$**（$E$ は現在の辺数）。
+を用いて候補スコアを作る。
 
-| 手法 | 計算量 | 不変量依存 | 備考 |
-|------|--------|-----------|------|
-| NOTEARS expm | $O(d^3)$ | 不要 | 連続最適化向け設計 |
-| DFS 到達可能性 | $O(d + E)$ | **必要** | j の可達部分グラフのみ探索 |
-| **Kahn トポロジカルソート** | $O(d + E)$ | **不要** | グラフ全体を走査 |
+2. `include_diagonal=True` のとき
 
-疎なグラフ（$E = O(d)$）では $O(d)$ まで改善される。
+- 対角候補: $|G_{ii}|$
+- 非対角候補: $|G_{ij}|,\ i \neq j$
 
----
+を 1 本のベクトル `scores` にまとめる。
 
-## 7. 計算複雑度
+3. `scores` の最大要素を 1 つ取り出し，その候補が実際に改善を与えるかを判定する。
 
-### 7.1 T-step 版（1ステップあたり）
+4. 改善しない候補は `scores[idx] = -1` として淘汰し，次に大きい候補を再び調べる。
 
-| 操作 | 複雑度 | 説明 |
-|------|--------|------|
-| 勾配取得 | $O(1)$ | `G` はキャッシュ済み |
-| スコア計算 | $O(d^2)$ | `max(\|G\|, \|G^T\|)` の上三角 |
-| ペア選択（argmax × $k$） | $O(k d^2)$ | 不可行ペアをマスクして繰り返し argmax，通常 $k \approx 1$ |
-| 実行可能性チェック × $k$ | $O(k(d+E))$ | Kahn，$O(k d^2)$ に比べ無視できる |
-| ゼロ化（rank-1 × 2） | $O(d^2)$ | SM + G 更新 |
-| $\delta^*$ 計算 | $O(d)$ | 閉形式 |
-| $\Delta$ 評価 | $O(1)$ | 増分公式 |
-| 辺の追加（rank-1） | $O(d^2)$ | SM + G 更新 |
-| **合計** | $\mathbf{O(k d^2)}$ | $k=1$ 時は $O(d^2)$，ソート不要 |
+5. 最初に受理された候補だけを実際に更新する。
 
-初期化（1回のみ）：$A^{-1}$，$G$，$f$ の計算で $O(d^3)$。
+6. どの候補も受理されなければそこで打ち切る。
 
-### 7.2 Epoch 版（1 epoch あたり）
+このため，1 ステップの理論計算量は「候補を何個棄却したか」に依存する。
 
-| 操作 | 複雑度 | 説明 |
-|------|--------|------|
-| 精確再計算 | $O(d^3)$ | epoch 開始時のみ |
-| スコア計算・ソート | $O(d^2 \log d)$ | $O(d^4)$ に比べ無視できる |
-| 構造ブロック（全ペア更新） | $O(d^4)$ | 主要項 |
-| スケールブロック（対角更新） | $O(d^3)$ | |
-| **合計** | $\mathbf{O(d^4)}$ | ランダム epoch CD と同一 |
+### 3.3 `dag_greedy_A` と `dag_greedy_A_directed` の違い
 
-Epoch 版の漸近複雑度はランダム CD と変わらないが，**1 epoch あたりに扱う情報の質が高い**（勾配の大きいペアを先に処理）ため，収束が速くなることが期待される。
+- `dag_greedy_A`
+  - 対角候補と非対角候補を同一ループ内で扱う
+  - 対角更新も greedy に選ばれる
+- `dag_greedy_A_directed`
+  - 非対角候補のみを対象とする
+  - 対角更新は行わない
 
 ---
 
-## 8. 実装上の注意点
+## 4. 非対角更新
 
-### 8.1 SM フォールバック
+### 4.1 1 次元最適化
 
-`_rank1_update` は SM の分母 $|1 + \delta\alpha| < 10^{-15}$ を検出した場合，何も変更せずに `False` を返す。呼び出し元は：
-1. `A` を直接更新
-2. `adj` を手動更新
-3. `_recompute_all` で全キャッシュを再計算
+座標 $(i,j)$ に対して
 
-という手順でフォールバックする。このケースは実用上ほぼ発生しない。
+$$
+A \leftarrow A + \delta E_{ij}
+$$
 
-### 8.2 対角成分の更新
+を考えると，$f(A)$ を最小化する $\delta^\*$ は `coordinate0.delta_star(...)` で計算される。
 
-対角成分 $A_{ii}$ は DAG 制約と無関係であり，実行可能性チェックを必要としない。座標の大域最小解を求めるため，いったん $A_{ii} = 0.3$ にリセットしてから $\delta^*$ を適用する（`coordinate0.py` の `update_diagonal` と同一の手順）。
+必要な量は
 
-### 8.3 勾配スコアと $\ell_0$ 正則化
+$$
+c = S_{ii}, \qquad b = (SA)_{ij}, \qquad \alpha = (A^{-1})_{ji}
+$$
 
-ペア選択は勾配の絶対値のみに基づく（$\lambda$ を含まない）。$\lambda$ は改善量 $\Delta = -\Delta f - \lambda$ の評価時にのみ使用される。したがって，勾配が大きくても $|\Delta f| < \lambda$ であれば辺は追加されない。
+であり，
 
-### 8.4 数値安定性
+$$
+D = (c + \alpha b)^2 - 4 \alpha c (b - \alpha)
+$$
 
-- `np.log1p(x)` を使用（$|x| \ll 1$ での精度向上）
-- Epoch 版では epoch 開始時に `A_inv`，`G`，`f_val` を完全再計算（SM の累積誤差を排除）
-- T-step 版では累積誤差が懸念される場合，`_recompute_all` を定期的に呼び出すことを推奨
+$$
+\delta^\* =
+\frac{2(b-\alpha)}{-(c+\alpha b)-\sqrt{D}}
+$$
+
+を用いる。`A_inv` がキャッシュされていれば $\alpha$ は $O(1)$ で取り出せる。
+
+### 4.2 目的関数差分
+
+更新 $A[i,j] \mathrel{+}= \delta$ に対する $f$ の差分は
+
+$$
+\Delta f
+=
+-2 \log(1+\delta \alpha)
++ 2 \delta (SA)_{ij}
++ \delta^2 S_{ii}
+$$
+
+である。実装では
+
+$$
+(SA)_{ij} = \frac{G_{ij} + 2(A^{-1})_{ji}}{2}
+$$
+
+を使って，`G` と `A_inv` から $O(1)$ で取り出している。
+
+### 4.3 受理条件
+
+非対角候補 $(i,j)$ に対する受理判定は `_directed_coordinate_gain(...)` で行う。
+
+- すでに辺 $i \to j$ が存在する場合
+
+$$
+\text{gain}_{ij} = -\Delta f
+$$
+
+- まだ辺が存在しない場合
+
+$$
+\text{gain}_{ij} = -\Delta f - \lambda_{\ell_0}
+$$
+
+`gain > 0` のときのみ更新を受理する。
+
+### 4.4 DAG 判定
+
+辺 $i \to j$ がまだ存在しないときだけ，`_can_add_edge(adj, i, j)` を呼ぶ。
+
+手順は単純で，
+
+1. `adj[i]` に一時的に `j` を追加
+2. `_is_dag_kahn(adj)` で DAG 性を判定
+3. 元に戻す
+
+という流れである。計算量は $O(d+E)$，ここで $E$ は現在の辺数である。
 
 ---
 
-## 9. 関連関数一覧
+## 5. 対角更新
 
-```
+対角成分 $A_{ii}$ は DAG 制約と無関係なので，別の 1 次元最適化を使う。
+
+`_diagonal_coordinate_gain(...)` は `coordinate0.update_diagonal(...)` と同じ考え方を採用している。
+
+1. まず
+
+$$
+A_{ii} \leftarrow 0.3
+$$
+
+へ一旦リセットする。
+
+2. そのリセット後の状態から，再び 1 次元最適化で最良の追加量 `final_delta` を計算する。
+
+3. リセット分と追加分の合計改善量
+
+$$
+\text{gain}_{ii} = -(\Delta f_{\text{reset}} + \Delta f_{\text{final}})
+$$
+
+が正なら，2 回の rank-1 update を適用する。
+
+対角更新には $\ell_0$ ペナルティは課していない。
+
+---
+
+## 6. rank-1 更新とキャッシュ
+
+本実装の要点は，更新ごとに `A_inv`・`G`・`f_state`・`adj` を同期的に保つ点にある。
+
+### 6.1 Sherman-Morrison
+
+$$
+A_{\text{new}} = A + \delta e_i e_j^\top
+$$
+
+に対して，
+
+$$
+A_{\text{new}}^{-1}
+=
+A^{-1}
+-
+\frac{\delta}{1+\delta (A^{-1})_{ji}}
+\,
+A^{-1}[:,i]\,
+A^{-1}[j,:]
+$$
+
+を用いる。これは `_rank1_update(...)` に実装されている。
+
+### 6.2 勾配キャッシュの更新
+
+`G = -2A^{-T} + 2SA` なので，
+
+- 逆行列項は outer product で $O(d^2)$
+- $2SA$ 項は第 $j$ 列だけを $O(d)$ で更新
+
+できる。したがって 1 回の受理更新は基本的に $O(d^2)$ で済む。
+
+### 6.3 目的関数のキャッシュ
+
+`f_state[0]` は差分公式を使って in-place に更新する。これにより各ステップで `f(A,S)` を $O(d^2)$ で再評価する必要がない。
+
+### 6.4 フォールバック
+
+Sherman-Morrison の分母
+
+$$
+1 + \delta (A^{-1})_{ji}
+$$
+
+が極端に小さいときは数値的に不安定なので，`_rank1_update(...)` は `False` を返す。その場合 `_recompute_all(...)` により
+
+- `A_inv`
+- `G`
+- `f_state`
+
+を厳密に再計算する。
+
+---
+
+## 7. Epoch 版
+
+`dag_greedy_A_epoch(...)` は T-step 版とは別系統であり，旧来の pair-based 更新を 1 epoch ごとにまとめて実行する。
+
+1 epoch は次の 2 ブロックからなる。
+
+1. 構造ブロック
+   - 上三角の全 pair $(i,j)$ を `max(|G_{ij}|, |G_{ji}|)` で並べ替える
+   - 各 pair に対して `update_off_diagonal_greedy(...)` を適用する
+
+2. スケールブロック
+   - すべての対角成分に `update_diagonal_greedy(...)` を適用する
+
+`update_off_diagonal_greedy(...)` は directed 版とは異なり，pair $(i,j)$ を選んだら
+
+- まず $A_{ij}, A_{ji}$ をともに 0 に戻し
+- その後で $i \to j$ と $j \to i$ のどちらが良いかを比べ
+- 良い方向だけを入れ直す
+
+という pair-based の処理になっている。
+
+---
+
+## 8. 計算量の見方
+
+### 8.1 T-step 版
+
+候補数を
+
+$$
+m =
+\begin{cases}
+d + d(d-1) & \text{対角を含む場合} \\
+d(d-1) & \text{非対角のみの場合}
+\end{cases}
+$$
+
+とする。また 1 ステップ内で実際に調べた候補数を $k$ とする。
+
+| 処理 | 計算量 | 備考 |
+|---|---|---|
+| スコアベクトル構築 | $O(d^2)$ | `abs(G)` の抽出 |
+| 候補の探索 | $O(k d^2)$ | 現行実装は `argmax` を繰り返す |
+| DAG 判定 | $O(k(d+E))$ | 新規辺候補に対してのみ |
+| 受理更新 | $O(d^2)$ | rank-1 update |
+
+したがって 1 ステップの支配項は概ね
+
+$$
+O(k d^2)
+$$
+
+である。$k$ が小さければ 1 ステップは $O(d^2)$ に近く，$k$ が大きいと候補探索のコストが支配的になる。
+
+### 8.2 Epoch 版
+
+epoch 版は 1 epoch で全 pair を走査するため，
+
+$$
+O(d^4)
+$$
+
+スケールになる。こちらは T-step 版よりも重いが，1 epoch の中で網羅的に座標を更新する。
+
+---
+
+## 9. 実装上の注意
+
+### 9.1 `dag_greedy_A` の意味
+
+`dag_greedy_A` は「現在の勾配絶対値が大きい候補から順に，実際に受理可能なものを探す」アルゴリズムである。したがって純粋な `argmax |G_{ij}|` だけで更新するわけではなく，途中で複数候補が淘汰されることがある。
+
+### 9.2 `lambda_l0`
+
+`lambda_l0` は非対角成分の新規追加時にだけ効く。すでに存在する辺の再推定や，対角成分の更新にはペナルティを課していない。
+
+### 9.3 `threshold`
+
+返り値の `G_binary = weight_to_adjacency(A, threshold)` は，最終的な重み行列 `A` を閾値処理して二値グラフに変換したものである。学習中の `adj` では `1e-8` 程度の閾値を使い，出力時の可視化・評価には `threshold` を用いる。
+
+---
+
+## 10. 関数対応表
+
+```text
 cd_greedy_A.py
-├── _build_adjacency(A, threshold)           隣接リストの構築
-├── _is_dag_kahn(adj)                        Kahn DAG 判定        O(d+E)
-├── _can_add_edge(adj, i, j)                 辺追加の実行可能性   O(d+E)
-├── _rank1_update(A, A_inv, G, S, i, j, δ,  ランク-1 同期更新    O(d²)
-│       f_state, adj)
-├── _recompute_all(A, S, A_inv, G, f_state)  フォールバック再計算 O(d³)
-├── _pair_scores(G)                          スコア行列の計算      O(d²)
-├── update_off_diagonal_greedy(...)          非対角更新            O(d²+d+E)
-├── update_diagonal_greedy(...)              対角更新              O(d²)
-├── dag_greedy_A(S, T, ...)                  T-step 版メイン関数
-└── dag_greedy_A_epoch(S, n_epochs, ...)     Epoch 版メイン関数
+├── _build_adjacency(A, threshold)          非零非対角から隣接リストを構成
+├── _is_dag_kahn(adj)                       Kahn 法による DAG 判定
+├── _can_add_edge(adj, i, j)                辺 i->j を追加可能か判定
+├── _rank1_update(...)                      A, A_inv, G, f_state, adj の同時更新
+├── _recompute_all(...)                     失敗時の厳密再計算
+├── _incremental_df(...)                    1 座標更新の Δf
+├── _directed_coordinate_gain(...)          非対角候補の gain 計算
+├── _diagonal_coordinate_gain(...)          対角候補の gain 計算
+├── update_directed_coordinate(...)         非対角 1 座標更新
+├── update_diagonal_greedy(...)             対角 1 座標更新
+├── _dag_greedy_A_impl(...)                 T-step 版の共有本体
+├── dag_greedy_A(...)                       対角込み T-step greedy
+├── dag_greedy_A_directed(...)              非対角のみ T-step greedy
+└── dag_greedy_A_epoch(...)                 epoch ベース greedy
 ```
+
+---
+
+## 11. まとめ
+
+現行の `greedy_cd_A` 実装は，
+
+- `A_inv`・`G`・`f_state` をキャッシュし
+- 受理された更新は rank-1 で $O(d^2)$ に反映し
+- DAG 制約は隣接リスト + Kahn 法で処理し
+- T-step 版では勾配絶対値の大きい候補から順に受理可能性を調べる
+
+という構成になっている。
+
+したがって本実装の性質は，
+
+- 受理更新自体は軽い
+- どれだけ候補を棄却するかが T-step 版の実行時間を左右する
+- epoch 版はより網羅的だが計算量は重い
+
+という 3 点に要約できる。
