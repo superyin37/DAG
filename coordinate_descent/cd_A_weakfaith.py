@@ -3,11 +3,18 @@
 This module implements `dag_coordinate_descent_l0_weakfaith`, a variant of
 `coordinate0.dag_coordinate_descent_l0` (a.k.a. `cd_A_noepoch`) that prunes the
 off-diagonal candidate pool using a one-edge faithfulness assumption: if the
-marginal correlation (or partial correlation) between x_i and x_j is below a
-threshold tau, the coordinate pair (i, j) is excluded from sampling.
+marginal correlation, partial correlation, or Graphical-Lasso precision entry
+between x_i and x_j is below a threshold tau, the coordinate pair (i, j) is
+excluded from sampling.
+
+Multiple screens can be combined via the ``combine`` argument. An optional
+initial-gain mask can also freeze out directed pairs whose first-round L0 gain
+is not positive.
 
 See `docs/weak_faithfulness_cd_A_noepoch_zh.md` for the full design rationale.
 """
+
+from itertools import combinations
 
 import numpy as np
 
@@ -15,21 +22,230 @@ try:
     from .coordinate0 import (
         update_diagonal,
         update_off_diagonal,
+        delta_star,
         f,
+        is_DAG,
         weight_to_adjacency,
+        _sm_update_A_inv,
         _graph_snapshot,
     )
 except ImportError:
     from coordinate0 import (
         update_diagonal,
         update_off_diagonal,
+        delta_star,
         f,
+        is_DAG,
         weight_to_adjacency,
+        _sm_update_A_inv,
         _graph_snapshot,
     )
 
 
-def _build_faithfulness_mask(S, tau, screening):
+_VALID_SCREENS = ("corr", "pcorr", "glasso")
+
+
+def _normalize_screening(screening):
+    """Accept str or sequence of str; return a tuple of valid screen names."""
+    if isinstance(screening, str):
+        screens = (screening,)
+    else:
+        screens = tuple(screening)
+        if len(screens) == 0:
+            raise ValueError("screening must contain at least one method")
+    for s in screens:
+        if s not in _VALID_SCREENS:
+            raise ValueError(
+                f"unknown screening {s!r} (expected any of {_VALID_SCREENS})"
+            )
+    if len(set(screens)) != len(screens):
+        raise ValueError(f"duplicate screening entries: {screens}")
+    return screens
+
+
+def _screen_forbidden(S, tau, screen, glasso_alpha):
+    """Return a (d, d) bool forbidden mask for a single screening method."""
+    d = S.shape[0]
+    if screen == "corr":
+        std = np.sqrt(np.diag(S))
+        stat = S / np.outer(std, std)
+    elif screen == "pcorr":
+        try:
+            Omega = np.linalg.inv(S + 1e-6 * np.eye(d))
+        except np.linalg.LinAlgError as e:
+            raise ValueError(
+                "S is singular even after ridge regularization; "
+                "cannot compute pcorr screening."
+            ) from e
+        d_std = np.sqrt(np.diag(Omega))
+        stat = -Omega / np.outer(d_std, d_std)
+    elif screen == "glasso":
+        try:
+            from sklearn.covariance import graphical_lasso
+        except ImportError as e:
+            raise ImportError(
+                "scikit-learn is required for glasso screening; "
+                "install scikit-learn."
+            ) from e
+
+        # Standardize to correlation scale: the raw covariance is often
+        # ill-conditioned at small alpha (triggers "Non SPD result"), while
+        # the correlation matrix has unit diagonal and entries in [-1, 1],
+        # which is also the natural scale for our tau threshold.
+        std_S = np.sqrt(np.diag(S))
+        std_S = np.where(std_S > 0, std_S, 1.0)
+        S_corr = S / np.outer(std_S, std_S)
+
+        attempts = (
+            {"alpha": glasso_alpha, "ridge": 0.0},
+            {"alpha": glasso_alpha, "ridge": 1e-4},
+            {"alpha": max(glasso_alpha * 5.0, 0.05), "ridge": 1e-3},
+        )
+        Omega_gl = None
+        last_err = None
+        for a in attempts:
+            emp = S_corr + a["ridge"] * np.eye(d) if a["ridge"] > 0 else S_corr
+            try:
+                _, Omega_gl = graphical_lasso(
+                    emp, alpha=a["alpha"], max_iter=500, tol=1e-3
+                )
+                break
+            except (FloatingPointError, np.linalg.LinAlgError) as e:
+                last_err = e
+        if Omega_gl is None:
+            raise ValueError(
+                "graphical_lasso failed even after standardization, ridge, "
+                f"and alpha bump (last error: {last_err!r}). "
+                "Try a larger glasso_alpha or drop 'glasso' from screening."
+            )
+
+        d_std = np.sqrt(np.diag(Omega_gl))
+        d_std = np.where(d_std > 0, d_std, 1.0)
+        stat = -Omega_gl / np.outer(d_std, d_std)
+    else:
+        raise ValueError(f"unknown screening {screen!r}")
+
+    forbidden = np.abs(stat) < tau
+    np.fill_diagonal(forbidden, False)
+    return forbidden
+
+
+def _combine_forbidden_masks(forbidden_list, combine):
+    if combine == "union":
+        forbidden = forbidden_list[0].copy()
+        for fb in forbidden_list[1:]:
+            forbidden &= fb
+    elif combine == "intersect":
+        forbidden = forbidden_list[0].copy()
+        for fb in forbidden_list[1:]:
+            forbidden |= fb
+    else:
+        raise ValueError(
+            f"unknown combine {combine!r} (expected 'union' or 'intersect')"
+        )
+    np.fill_diagonal(forbidden, False)
+    return forbidden
+
+
+def _offdiag_count(mask):
+    d = mask.shape[0]
+    offdiag = ~np.eye(d, dtype=bool)
+    return int(np.sum(mask & offdiag))
+
+
+def faithfulness_mask_diagnostics(
+    S, tau, screening, glasso_alpha=0.01, combine="union"
+):
+    """Return numeric diagnostics for weak-faithfulness screening masks.
+
+    Counts are over directed off-diagonal coordinate pairs, so the denominator
+    is ``d * (d - 1)``. ``mask_zero_count`` is the number of pairs removed by
+    the combined mask used by the algorithm. Per-screen counts and pairwise
+    overlaps describe how much each individual screen removes and how much the
+    removed sets agree.
+    """
+    d = S.shape[0]
+    total = d * (d - 1)
+    screens = _normalize_screening(screening)
+    stats = {
+        "mask_total_offdiag": int(total),
+        "mask_tau": float(tau),
+        "mask_n_screens": int(len(screens)),
+    }
+
+    if tau <= 0.0:
+        stats.update(
+            {
+                "mask_allowed_count": int(total),
+                "mask_zero_count": 0,
+                "mask_keep_ratio": 1.0,
+                "mask_zero_ratio": 0.0,
+            }
+        )
+        return stats
+
+    forbidden_by_screen = {
+        s: _screen_forbidden(S, tau, s, glasso_alpha) for s in screens
+    }
+    forbidden_list = [forbidden_by_screen[s] for s in screens]
+    combined = _combine_forbidden_masks(forbidden_list, combine)
+
+    zero_count = _offdiag_count(combined)
+    allowed_count = total - zero_count
+    stats.update(
+        {
+            "mask_allowed_count": int(allowed_count),
+            "mask_zero_count": int(zero_count),
+            "mask_keep_ratio": float(allowed_count / total) if total else 1.0,
+            "mask_zero_ratio": float(zero_count / total) if total else 0.0,
+        }
+    )
+
+    for s, fb in forbidden_by_screen.items():
+        screen_zero = _offdiag_count(fb)
+        stats[f"mask_{s}_zero_count"] = int(screen_zero)
+        stats[f"mask_{s}_allowed_count"] = int(total - screen_zero)
+        stats[f"mask_{s}_zero_ratio"] = (
+            float(screen_zero / total) if total else 0.0
+        )
+        stats[f"mask_{s}_keep_ratio"] = (
+            float((total - screen_zero) / total) if total else 1.0
+        )
+
+    for a, b in combinations(screens, 2):
+        fa = forbidden_by_screen[a]
+        fb = forbidden_by_screen[b]
+        inter = _offdiag_count(fa & fb)
+        union = _offdiag_count(fa | fb)
+        min_zero = min(_offdiag_count(fa), _offdiag_count(fb))
+        prefix = f"mask_overlap_{a}_{b}"
+        stats[f"{prefix}_count"] = int(inter)
+        stats[f"{prefix}_union_count"] = int(union)
+        stats[f"{prefix}_jaccard"] = float(inter / union) if union else 1.0
+        stats[f"{prefix}_overlap_ratio"] = (
+            float(inter / min_zero) if min_zero else 1.0
+        )
+
+    if len(screens) >= 2:
+        all_inter = forbidden_list[0].copy()
+        all_union = forbidden_list[0].copy()
+        for fb in forbidden_list[1:]:
+            all_inter &= fb
+            all_union |= fb
+        all_inter_count = _offdiag_count(all_inter)
+        all_union_count = _offdiag_count(all_union)
+        stats["mask_overlap_all_count"] = int(all_inter_count)
+        stats["mask_overlap_all_union_count"] = int(all_union_count)
+        stats["mask_overlap_all_jaccard"] = (
+            float(all_inter_count / all_union_count) if all_union_count else 1.0
+        )
+
+    return stats
+
+
+def _build_faithfulness_mask(
+    S, tau, screening, glasso_alpha=0.01, combine="union"
+):
     """Build the forbidden/allowed masks for one-edge faithfulness screening.
 
     Parameters
@@ -40,8 +256,21 @@ def _build_faithfulness_mask(S, tau, screening):
     tau : float
         Threshold below which |statistic| is treated as zero. tau <= 0 disables
         screening and returns (None, d*(d-1)).
-    screening : {"corr", "pcorr"}
-        Statistic used for the independence test.
+    screening : str or sequence of str
+        One or more of {"corr", "pcorr", "glasso"}. A sequence activates all
+        listed screens and combines them via ``combine``.
+    glasso_alpha : float, default 0.01
+        Regularization strength passed to ``sklearn.covariance.graphical_lasso``
+        when "glasso" is selected.
+    combine : {"union", "intersect"}, default "union"
+        How to merge forbidden masks across multiple screens.
+
+        - "union" (default, matches the rule "discard only if all screens say
+          zero"): an edge is forbidden only when every selected screen marks it
+          as zero. Allowed set = union of per-screen allowed sets.
+        - "intersect": an edge is forbidden if any screen marks it as zero
+          (stricter pruning). Allowed set = intersection of per-screen allowed
+          sets.
 
     Returns
     -------
@@ -55,34 +284,138 @@ def _build_faithfulness_mask(S, tau, screening):
     if tau <= 0.0:
         return None, d * (d - 1)
 
-    if screening == "corr":
-        std = np.sqrt(np.diag(S))
-        stat = S / np.outer(std, std)
-    elif screening == "pcorr":
-        try:
-            Omega = np.linalg.inv(S + 1e-6 * np.eye(d))
-        except np.linalg.LinAlgError as e:
-            raise ValueError(
-                "S is singular even after ridge regularization; "
-                "cannot compute pcorr screening."
-            ) from e
-        d_std = np.sqrt(np.diag(Omega))
-        stat = -Omega / np.outer(d_std, d_std)
-    else:
-        raise ValueError(
-            f"unknown screening {screening!r} (expected 'corr' or 'pcorr')"
-        )
+    screens = _normalize_screening(screening)
 
-    forbidden = np.abs(stat) < tau
-    np.fill_diagonal(forbidden, False)
+    forbidden_list = [
+        _screen_forbidden(S, tau, s, glasso_alpha) for s in screens
+    ]
+
+    forbidden = _combine_forbidden_masks(forbidden_list, combine)
     allowed = np.argwhere(~forbidden & ~np.eye(d, dtype=bool))
     M = len(allowed)
     if M == 0:
         raise ValueError(
-            f"All off-diagonal pairs masked (tau={tau}, screening={screening!r}); "
-            f"try a smaller tau."
+            f"All off-diagonal pairs masked (tau={tau}, screening={screens!r}, "
+            f"combine={combine!r}); try a smaller tau or a more lenient combine."
         )
     return allowed, M
+
+
+def _zero_pair_in_place(A, A_inv, i, j):
+    """Zero A[i, j] and A[j, i], keeping A_inv in sync when supplied."""
+    old_aij = A[i, j]
+    old_aji = A[j, i]
+    A[i, j] = A[j, i] = 0.0
+
+    if A_inv is None:
+        return
+
+    ok = True
+    if old_aij != 0.0:
+        ok = _sm_update_A_inv(A_inv, i, j, -old_aij)
+    if ok and old_aji != 0.0:
+        ok = _sm_update_A_inv(A_inv, j, i, -old_aji)
+    if not ok:
+        A_inv[:] = np.linalg.inv(A)
+
+
+def _directed_l0_net_gain(A, S, i, j, lambda_l0, A_inv=None):
+    """Return the best one-direction L0 net gain for i -> j from current A."""
+    d = A.shape[0]
+    Eij = np.eye(d)[i][:, None] * np.eye(d)[j][None, :]
+    if not is_DAG(A + Eij):
+        return -np.inf
+
+    delta = delta_star(A, S, i, j, A_inv=A_inv)
+    if A_inv is None:
+        try:
+            A_inv = np.linalg.inv(A)
+        except np.linalg.LinAlgError:
+            return -np.inf
+    alpha = float(A_inv[j, i])
+    b = float(S[i, :] @ A[:, j])
+    c = float(S[i, i])
+    log_arg = 1.0 + delta * alpha
+    if log_arg <= 0.0:
+        return -np.inf
+
+    score = 2.0 * np.log(log_arg) - 2.0 * delta * b - delta * delta * c
+    return float(score - lambda_l0)
+
+
+def _build_initial_gain_mask(A, S, lambda_l0, allowed_offdiag=None, eps=0.0):
+    """Keep only directed pairs whose initial L0 update has positive net gain."""
+    d = S.shape[0]
+    allowed_direction = np.zeros((d, d), dtype=bool)
+
+    if allowed_offdiag is None:
+        candidates = np.argwhere(~np.eye(d, dtype=bool))
+    else:
+        candidates = allowed_offdiag
+
+    for i_raw, j_raw in candidates:
+        i = int(i_raw)
+        j = int(j_raw)
+        A_pair = A.copy()
+        try:
+            A_pair_inv = np.linalg.inv(A_pair)
+        except np.linalg.LinAlgError:
+            continue
+        try:
+            _zero_pair_in_place(A_pair, A_pair_inv, i, j)
+            gain = _directed_l0_net_gain(
+                A_pair, S, i, j, lambda_l0, A_inv=A_pair_inv
+            )
+        except np.linalg.LinAlgError:
+            continue
+        if gain > eps:
+            allowed_direction[i, j] = True
+
+    allowed = np.argwhere(allowed_direction)
+    return allowed, len(allowed), allowed_direction
+
+
+def _update_off_diagonal_with_direction_mask(
+    A, S, i, j, lambda_l0=0.2, A_inv=None, direction_mask=None
+):
+    """Pair update that never evaluates directions forbidden by direction_mask."""
+    _zero_pair_in_place(A, A_inv, i, j)
+
+    gain_ij = -np.inf
+    gain_ji = -np.inf
+    delta_ij = 0.0
+    delta_ji = 0.0
+
+    if direction_mask is None or direction_mask[i, j]:
+        gain_ij = _directed_l0_net_gain(A, S, i, j, lambda_l0, A_inv=A_inv)
+        if gain_ij > 0.0:
+            delta_ij = delta_star(A, S, i, j, A_inv=A_inv)
+
+    if direction_mask is None or direction_mask[j, i]:
+        gain_ji = _directed_l0_net_gain(A, S, j, i, lambda_l0, A_inv=A_inv)
+        if gain_ji > 0.0:
+            delta_ji = delta_star(A, S, j, i, A_inv=A_inv)
+
+    if gain_ij == -np.inf and gain_ji == -np.inf:
+        return A
+    if gain_ij < 0.0 and gain_ji < 0.0:
+        return A
+
+    if gain_ij > gain_ji:
+        if A_inv is not None:
+            if not _sm_update_A_inv(A_inv, i, j, delta_ij):
+                A_new = A.copy()
+                A_new[i, j] += delta_ij
+                A_inv[:] = np.linalg.inv(A_new)
+        A[i, j] += delta_ij
+    else:
+        if A_inv is not None:
+            if not _sm_update_A_inv(A_inv, j, i, delta_ji):
+                A_new = A.copy()
+                A_new[j, i] += delta_ji
+                A_inv[:] = np.linalg.inv(A_new)
+        A[j, i] += delta_ji
+    return A
 
 
 def dag_coordinate_descent_l0_weakfaith(
@@ -102,12 +435,17 @@ def dag_coordinate_descent_l0_weakfaith(
     faithfulness_tau=0.0,
     sampling_mode="preserve",
     screening="corr",
+    glasso_alpha=0.01,
+    combine="union",
+    initial_gain_mask=False,
+    initial_gain_eps=0.0,
 ):
     """Random coordinate descent with one-edge faithfulness screening.
 
     Semantically equivalent to `coordinate0.dag_coordinate_descent_l0` when
-    `faithfulness_tau <= 0`; in that regime the RNG call sequence is identical,
-    so results match byte-for-byte under the same seed.
+    `faithfulness_tau <= 0` and `initial_gain_mask=False`; in that regime the
+    RNG call sequence is identical, so results match byte-for-byte under the
+    same seed.
 
     Parameters
     ----------
@@ -115,8 +453,9 @@ def dag_coordinate_descent_l0_weakfaith(
     A_init, early_stop, check_every, tol, patience, min_steps :
         Same as `coordinate0.dag_coordinate_descent_l0`.
     faithfulness_tau : float, default 0.0
-        Screening threshold. 0 disables screening and reverts to the original
-        uniform (i, j) sampling.
+        Weak-faithfulness screening threshold. 0 disables this screen. With
+        `initial_gain_mask=False`, this reverts to the original uniform (i, j)
+        sampling.
     sampling_mode : {"preserve", "pool"}, default "preserve"
         How to allocate sampling probability between diagonal and off-diagonal
         coordinates when screening is active.
@@ -124,9 +463,34 @@ def dag_coordinate_descent_l0_weakfaith(
         - "preserve": P(diag) = 1/d (matches original), off-diag uniform over
           the allowed pool.
         - "pool": uniform over {d diagonal coords} ∪ {M allowed off-diag coords}.
-    screening : {"corr", "pcorr"}, default "corr"
-        Statistic used to judge marginal (corr) or conditional-on-rest (pcorr)
-        independence.
+    screening : str or sequence of str, default "corr"
+        One or more statistics used to judge "x_i and x_j are approximately
+        independent". Valid names: "corr" (marginal correlation),
+        "pcorr" (partial correlation, conditioning on all other variables),
+        "glasso" (Graphical-Lasso precision entry, normalized to the pcorr
+        scale). Pass a sequence (e.g. ["corr", "pcorr"]) to enable multiple
+        screens at once; they are merged via ``combine``.
+    glasso_alpha : float, default 0.01
+        L1 regularization strength for Graphical Lasso; only used when
+        "glasso" is among the selected screens.
+    combine : {"union", "intersect"}, default "union"
+        How to merge forbidden masks when multiple screens are selected.
+
+        - "union": an edge is forbidden only when every screen marks it as
+          zero (allowed set = union of per-screen allowed sets). Matches the
+          rule "discard edges where corr AND pcorr are both zero".
+        - "intersect": an edge is forbidden if any screen marks it as zero
+          (allowed set = intersection, stricter pruning).
+
+        Ignored when only one screen is selected.
+    initial_gain_mask : bool, default False
+        If True, run one initial scan over directed off-diagonal pairs and keep
+        only pairs whose one-direction L0 net gain is positive at the initial A
+        (after the same pair-zeroing convention used by `update_off_diagonal`).
+        A direction with ``score - lambda_l0 <= initial_gain_eps`` is never
+        considered in later updates.
+    initial_gain_eps : float, default 0.0
+        Numerical tolerance for `initial_gain_mask`.
 
     Returns
     -------
@@ -137,10 +501,6 @@ def dag_coordinate_descent_l0_weakfaith(
             f"unknown sampling_mode {sampling_mode!r} "
             f"(expected 'preserve' or 'pool')"
         )
-    if screening not in ("corr", "pcorr"):
-        raise ValueError(
-            f"unknown screening {screening!r} (expected 'corr' or 'pcorr')"
-        )
 
     np.random.seed(seed)
     d = S.shape[0]
@@ -150,7 +510,22 @@ def dag_coordinate_descent_l0_weakfaith(
 
     A_inv = np.linalg.inv(A)
 
-    allowed_offdiag, M = _build_faithfulness_mask(S, faithfulness_tau, screening)
+    allowed_offdiag, M = _build_faithfulness_mask(
+        S,
+        faithfulness_tau,
+        screening,
+        glasso_alpha=glasso_alpha,
+        combine=combine,
+    )
+    initial_direction_mask = None
+    if initial_gain_mask:
+        allowed_offdiag, M, initial_direction_mask = _build_initial_gain_mask(
+            A,
+            S,
+            lambda_l0,
+            allowed_offdiag=allowed_offdiag,
+            eps=initial_gain_eps,
+        )
 
     if early_stop:
         if check_every is None:
@@ -164,6 +539,8 @@ def dag_coordinate_descent_l0_weakfaith(
         if allowed_offdiag is None:
             # tau <= 0: original uniform sampling (preserves RNG sequence).
             i, j = np.random.choice(d, 2, replace=True)
+        elif M == 0:
+            i = j = int(np.random.randint(d))
         elif sampling_mode == "preserve":
             if np.random.rand() < 1.0 / d:
                 i = j = int(np.random.randint(d))
@@ -181,6 +558,16 @@ def dag_coordinate_descent_l0_weakfaith(
 
         if i == j:
             A = update_diagonal(A, S, i, A_inv=A_inv)
+        elif initial_direction_mask is not None:
+            A = _update_off_diagonal_with_direction_mask(
+                A,
+                S,
+                i,
+                j,
+                lambda_l0,
+                A_inv=A_inv,
+                direction_mask=initial_direction_mask,
+            )
         else:
             A = update_off_diagonal(A, S, i, j, lambda_l0, A_inv=A_inv)
 

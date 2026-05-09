@@ -1,0 +1,2 @@
+noise_ratio,d,n_samples,degree,algorithm,trials,mec_match_mean,shd_mean,shd_std,cpdag_shd_mean,cpdag_shd_std,directed_precision_mean,directed_recall_mean,directed_f1_mean,skeleton_precision_mean,skeleton_recall_mean,n_edges_true_mean,n_edges_est_mean,runtime_sec_mean,runtime_sec_std,failures
+16.0,5,200,1.0,notears,1,0.0,1.0,,2.0,,0.8333333333333334,1.0,0.9090909090909091,0.8333333333333334,1.0,5.0,6.0,1.8531508999876678,,0

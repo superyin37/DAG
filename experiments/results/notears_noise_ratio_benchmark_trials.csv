@@ -1,0 +1,2 @@
+noise_ratio,d,n_samples,trial_id,seed,algorithm,status,mec_match,shd,cpdag_shd,precision,recall,f1,n_edges_true,n_edges_est,runtime_sec,message
+16,50,20000,1,89250953,notears,ok,1,0.0,0.0,1.0,1.0,1.0,28,28,728.3925833000103,

@@ -312,6 +312,101 @@ def dag_coordinate_descent_l0(
 
 ---
 
-## 10. 参考
+## 10. 实验结果（ER 基准）
+
+> 实验笔记本：[`experiments/notebooks/test/test_er_cd_A_weakfaith_benchmark.ipynb`](../experiments/notebooks/test/test_er_cd_A_weakfaith_benchmark.ipynb)
+> 结果 CSV：`experiments/results/er_cd_A_weakfaith_benchmark_summary.csv`
+
+### 10.1 实验设定
+
+| 参数 | 值 |
+|---|---|
+| 图类型 | ER，度 2.0 |
+| 噪声 | `gaussian_nv`，$B_{\text{scale}} = 1.0$ |
+| $d$ | 20, 30, 50 |
+| $n$ | 20 000 |
+| 每组试验数 | 10 |
+| $\lambda_{L0}$ | 0.2 |
+| $T$（步数预算） | 100 000 |
+| 早停 | 开启（tol=1e-4, patience=10） |
+| 阈值 | 0.05 |
+
+测试 6 个算法变体：
+
+1. **baseline**：原 `coordinate0.dag_coordinate_descent_l0`
+2. **wf_corr_tau0.02_preserve**：corr 筛选, $\tau=0.02$, preserve 采样
+3. **wf_corr_tau0.05_preserve**：corr 筛选, $\tau=0.05$, preserve 采样
+4. **wf_pcorr_tau0.02_preserve**：pcorr 筛选, $\tau=0.02$, preserve 采样
+5. **wf_pcorr_tau0.05_preserve**：pcorr 筛选, $\tau=0.05$, preserve 采样
+6. **wf_corr_tau0.05_pool**：corr 筛选, $\tau=0.05$, pool 采样
+
+### 10.2 主要指标汇总
+
+| 算法 | $d$ | SHD ↓ | CPDAG-SHD ↓ | MEC 匹配率 ↑ | 运行时间 (s) | 实际步数 (mean) | mask keep ratio |
+|---|---|---|---|---|---|---|---|
+| baseline | 20 | 9.9 | 17.4 | 10% | 3.2 | 12 096 | 1.00 |
+| baseline | 30 | 26.0 | 53.2 | 0% | 14.3 | 43 152 | 1.00 |
+| baseline | 50 | 32.9 | 64.9 | 0% | 50.3 | 86 593 | 1.00 |
+| **wf_pcorr_tau0.05_preserve** | **20** | **2.4** | **5.3** | **60%** | 2.5 | 10 521 | 0.17 |
+| **wf_pcorr_tau0.05_preserve** | **30** | **5.2** | **7.3** | **40%** | 10.3 | 32 736 | 0.12 |
+| **wf_pcorr_tau0.05_preserve** | **50** | **7.5** | **12.8** | **10%** | 44.1 | 78 123 | 0.06 |
+| wf_pcorr_tau0.02_preserve | 20 | 4.2 | 9.1 | 50% | 2.7 | 10 521 | 0.18 |
+| wf_pcorr_tau0.02_preserve | 30 | 6.1 | 8.3 | 20% | 10.8 | 34 643 | 0.12 |
+| wf_pcorr_tau0.02_preserve | 50 | 8.0 | 9.5 | 10% | 43.3 | 77 248 | 0.07 |
+| wf_corr_tau0.05_preserve | 20 | 7.7 | 16.5 | 20% | 2.6 | 10 794 | 0.27 |
+| wf_corr_tau0.05_preserve | 30 | 18.2 | 34.2 | 0% | 10.2 | 35 294 | 0.25 |
+| wf_corr_tau0.05_preserve | 50 | 20.0 | 37.4 | 0% | 41.9 | 81 110 | 0.14 |
+| wf_corr_tau0.02_preserve | 20 | 9.0 | 17.6 | 30% | 2.4 | 10 563 | 0.28 |
+| wf_corr_tau0.02_preserve | 30 | 17.8 | 35.2 | 0% | 9.2 | 31 806 | 0.25 |
+| wf_corr_tau0.02_preserve | 50 | 23.5 | 45.6 | 0% | 42.6 | 81 748 | 0.15 |
+| wf_corr_tau0.05_pool | 20 | 11.3 | 20.4 | 10% | 1.4 | 6 426 | 0.27 |
+| wf_corr_tau0.05_pool | 30 | 17.1 | 31.2 | 0% | 4.7 | 16 880 | 0.25 |
+| wf_corr_tau0.05_pool | 50 | 28.1 | 48.0 | 0% | 16.1 | 32 768 | 0.14 |
+
+### 10.3 关键发现
+
+#### (1) pcorr 筛选大幅提升结构恢复精度
+
+偏相关 (`pcorr`) 筛选在所有 $d$ 下均显著优于 baseline 和 corr 系列：
+- $d = 50$ 时 SHD 从 32.9 (baseline) 降至 **7.5** (`pcorr_tau0.05_preserve`)，降幅 **77%**。
+- CPDAG-SHD 从 64.9 降至 **12.8**，降幅 **80%**。
+- MEC 匹配率在 $d = 20$ 时达到 **60%**（baseline 仅 10%）。
+
+这证实了 §2.4 的理论分析：pcorr 筛选利用了精度矩阵的稀疏性，屏蔽了"仅通过中介间接相关"的变量对，使搜索集中在 moral graph 中的真实候选边上。
+
+#### (2) corr 筛选改善有限但仍正向
+
+corr 系列相对 baseline 有一定改善（$d = 50$ 时 SHD 从 32.9 降至 20.0），但远不及 pcorr。原因在于 corr 仅能屏蔽"完全无边际关联"的变量对，保留了大量间接关联对。
+
+#### (3) pool 采样：速度最快但精度略差
+
+`wf_corr_tau0.05_pool` 运行时间最短（$d = 50$ 时 **16.1s** vs baseline **50.3s**，加速 **3.1×**），但 SHD 与 baseline 持平（28.1 vs 32.9），劣于 preserve 模式（20.0）。pool 模式的 diag 采样比例过高（搜索空间小时 diag 占比达 1/3），导致结构恢复不充分。
+
+符合 §4.3 的预测：当 $M$ 接近 $d$ 量级时，应使用 `preserve` 模式。
+
+#### (4) 运行时间：preserve 模式无显著加速
+
+preserve 模式的运行时间与 baseline 接近（$d = 50$：41-44s vs 50s），因为 preserve 下每步的 `update_off_diagonal` 成本不变，只是搜索集中度提高了。加速体现在**更少的步数即可收敛**（实际步数更少或步数相近但结果更好），而非壁钟时间的缩减。
+
+#### (5) mask 稀疏度随 $d$ 递增
+
+| 筛选方式 | $d=20$ | $d=30$ | $d=50$ |
+|---|---|---|---|
+| corr ($\tau=0.05$) | 27% | 25% | 14% |
+| pcorr ($\tau=0.05$) | 17% | 12% | 6% |
+
+pcorr 在 $d=50$ 时仅保留 **6%** 的候选对，搜索空间压缩约 **16×**。随维度增大剪枝更激进，符合稀疏 DAG 下 moral graph 边数 $O(d)$ 而全对数 $O(d^2)$ 的渐近预期。
+
+### 10.4 结论与建议
+
+1. **推荐默认配置**：`screening="pcorr"`, `faithfulness_tau=0.05`, `sampling_mode="preserve"`。该配置在所有测试维度下均实现最佳或接近最佳的 SHD / CPDAG-SHD，且运行时间无显著增加。
+2. **追求速度时**：`screening="corr"`, `sampling_mode="pool"` 可获得 3× 加速，但精度无改善。
+3. **$\tau$ 选择**：0.05 略优于 0.02（更激进的剪枝在测试范围内未导致更多漏边），但更大的 $\tau$（如 0.1）未测试，需谨慎。
+4. **pcorr 的适用条件**：$n \gg d$ 时表现最佳（本实验 $n/d = 400$）。$n$ 接近 $d$ 时精度矩阵估计噪声增大，可能需退回 corr 或降低 $\tau$。
+
+---
+
+## 11. 参考
 
 [^1]: Ramsey et al., "A million variables and more: the Fast Greedy Equivalence Search algorithm for learning high-dimensional graphical causal models, with an application to functional magnetic resonance images." International Journal of Data Science and Analytics, 2017.
+[^2]: 实验笔记本 [`test_er_cd_A_weakfaith_benchmark.ipynb`](../experiments/notebooks/test/test_er_cd_A_weakfaith_benchmark.ipynb)，2026-04-18 运行。

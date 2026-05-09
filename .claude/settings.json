@@ -20,7 +20,9 @@
       "Bash(python -c \"import nbclient; print\\(nbclient.__version__\\)\")",
       "Bash(python -m nbconvert --to notebook --execute --inplace experiments/notebooks/test/test_gumbel_xges.ipynb --ExecutePreprocessor.timeout=600)",
       "Bash(python c:/tmp/patch_benchmark.py)",
-      "Bash(python)"
+      "Bash(python)",
+      "Bash(PYTHONIOENCODING=utf-8 python c:/tmp/build_l0_vs_l1_nb.py)",
+      "Read(//c/Users/super/DAG/**)"
     ]
   }
 }

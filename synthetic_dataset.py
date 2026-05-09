@@ -27,7 +27,17 @@ class SyntheticDataset:
     """
     _logger = logging.getLogger(__name__)
 
-    def __init__(self, n, d, graph_type, degree, noise_type, B_scale, seed=1):
+    def __init__(
+        self,
+        n,
+        d,
+        graph_type,
+        degree,
+        noise_type,
+        B_scale,
+        seed=1,
+        noise_ratio=1.0,
+    ):
         """Initialize self.
 
         Args:
@@ -38,12 +48,15 @@ class SyntheticDataset:
             noise_type ('gaussian_ev', 'gaussian_nv', 'exponential', 'gumbel'): Type of noise.
             B_scale (float): Scaling factor for range of B.
             seed (int): Random seed. Default: 1.
+            noise_ratio (float): Multiplicative scale for exogenous noise.
+                Default: 1.0, which preserves the original behavior.
         """
         self.n = n
         self.d = d
         self.graph_type = graph_type
         self.degree = degree
         self.noise_type = noise_type
+        self.noise_ratio = noise_ratio
         self.B_ranges = ((B_scale * -2.0, B_scale * -0.5),
                          (B_scale * 0.5, B_scale * 2.0))
         self.rs = np.random.RandomState(seed)    # Reproducibility
@@ -56,7 +69,9 @@ class SyntheticDataset:
         self.B_bin = SyntheticDataset.simulate_random_dag(self.d, self.degree,
                                                           self.graph_type, self.rs)
         self.B = SyntheticDataset.simulate_weight(self.B_bin, self.B_ranges, self.rs)
-        self.X, self.N = SyntheticDataset.simulate_linear_sem(self.B, self.n, self.noise_type, self.rs)
+        self.X, self.N = SyntheticDataset.simulate_linear_sem(
+            self.B, self.n, self.noise_type, self.rs, self.noise_ratio
+        )
         assert is_dag(self.B)
 
     @staticmethod
@@ -152,7 +167,9 @@ class SyntheticDataset:
         return B
 
     @staticmethod
-    def simulate_linear_sem(B, n, noise_type, rs=np.random.RandomState(1)):
+    def simulate_linear_sem(
+        B, n, noise_type, rs=np.random.RandomState(1), noise_ratio=1.0
+    ):
         """Simulate samples from linear SEM with specified type of noise.
 
         Args:
@@ -161,6 +178,8 @@ class SyntheticDataset:
             noise_type ('gaussian_ev', 'gaussian_nv', 'exponential', 'gumbel'): Type of noise.
             rs (numpy.random.RandomState): Random number generator.
                 Default: np.random.RandomState(1).
+            noise_ratio (float): Multiplicative scale for exogenous noise.
+                Default: 1.0, which preserves the original behavior.
 
         Returns:
             numpy.ndarray: [n, d] data matrix.
@@ -177,20 +196,20 @@ class SyntheticDataset:
             """
             if noise_type == 'gaussian_ev':
                 # Gaussian noise with equal variances
-                scale = 1.0
-                N_i = rs.normal(scale=1.0, size=n)
+                scale = 1.0 * noise_ratio
+                N_i = rs.normal(scale=scale, size=n)
             elif noise_type == 'gaussian_nv':
                 # Gaussian noise with non-equal variances
-                scale = rs.uniform(low=1.0, high=2.0)
+                scale = rs.uniform(low=1.0, high=2.0) * noise_ratio
                 N_i = rs.normal(scale=scale, size=n)
             elif noise_type == 'exponential':
-                scale = 1.0
+                scale = 1.0 * noise_ratio
                 # Exponential noise
-                N_i = rs.exponential(scale=1.0, size=n)
+                N_i = rs.exponential(scale=scale, size=n)
             elif noise_type == 'gumbel':
                 # Gumbel noise
-                scale = 1.0
-                N_i = rs.gumbel(scale=1.0, size=n)
+                scale = 1.0 * noise_ratio
+                N_i = rs.gumbel(scale=scale, size=n)
             else:
                 raise ValueError("Unknown noise type.")
             return X @ B_i + N_i, scale

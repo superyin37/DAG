@@ -1,0 +1,2 @@
+noise_ratio,d,n_samples,algorithm,trials,mec_match_mean,shd_mean,shd_std,cpdag_shd_mean,cpdag_shd_std,precision_mean,recall_mean,f1_mean,n_edges_true_mean,n_edges_est_mean,runtime_sec_mean,runtime_sec_std,failures
+16,50,20000,notears,1,1.0,0.0,,0.0,,1.0,1.0,1.0,28.0,28.0,728.3925833000103,,0

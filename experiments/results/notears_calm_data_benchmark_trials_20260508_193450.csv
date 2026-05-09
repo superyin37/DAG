@@ -1,0 +1,2 @@
+noise_ratio,d,n_samples,degree,trial_id,seed,algorithm,status,mec_match,shd,cpdag_shd,directed_precision,directed_recall,directed_f1,skeleton_precision,skeleton_recall,n_edges_true,n_edges_est,noise_scale_min,noise_scale_max,runtime_sec,message
+16.0,50,20000,1.0,1,89250953,notears,ok,0,7.0,11.0,0.8703703703703703,0.94,0.9038461538461539,0.9259259259259259,1.0,50,54,1.0,4.0,638.7031370999757,
