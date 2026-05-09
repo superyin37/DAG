@@ -5,7 +5,22 @@
       "Bash(PYTHONIOENCODING=utf-8 python3)",
       "Bash(ls -la c:/Users/super/DAG/experiments/results/degree_lambda_benchmark*.csv)",
       "Bash(python -c ':*)",
-      "Bash(python -c \"from coordinate_descent.coordinate0 import dag_coordinate_descent_l0, dag_coordinate_descent_l0_multi; print\\('import ok'\\)\")"
+      "Bash(python -c \"from coordinate_descent.coordinate0 import dag_coordinate_descent_l0, dag_coordinate_descent_l0_multi; print\\('import ok'\\)\")",
+      "Bash(PYTHONIOENCODING=utf-8 python c:\\\\tmp\\\\insert_cell.py)",
+      "Bash(PYTHONIOENCODING=utf-8 python \"c:/tmp/insert_cell.py\")",
+      "Bash(PYTHONIOENCODING=utf-8 python \"c:/tmp/update_cells.py\")",
+      "Bash(PYTHONIOENCODING=utf-8 python \"c:/tmp/update_cpdag.py\")",
+      "Bash(PYTHONIOENCODING=utf-8 python \"c:/tmp/strip_extras.py\")",
+      "Bash(python -c \"import json, sys; nb = json.load\\(sys.stdin\\); [print\\(f'--- cell {i} \\({c[\\\\\"cell_type\\\\\"]}\\) ---'\\); print\\(''.join\\(c.get\\('source', []\\)\\)[:800]\\) for i, c in enumerate\\(nb['cells']\\)]\")",
+      "Bash(python -c 'import subprocess; import json *)",
+      "Bash(python -c ' *)",
+      "Bash(jupyter nbconvert *)",
+      "Bash(python -m jupyter nbconvert --to notebook --execute --inplace experiments/notebooks/test/test_gumbel_xges.ipynb --ExecutePreprocessor.timeout=600)",
+      "Bash(python -c \"import nbconvert; print\\(nbconvert.__version__\\)\")",
+      "Bash(python -c \"import nbclient; print\\(nbclient.__version__\\)\")",
+      "Bash(python -m nbconvert --to notebook --execute --inplace experiments/notebooks/test/test_gumbel_xges.ipynb --ExecutePreprocessor.timeout=600)",
+      "Bash(python c:/tmp/patch_benchmark.py)",
+      "Bash(python)"
     ]
   }
 }

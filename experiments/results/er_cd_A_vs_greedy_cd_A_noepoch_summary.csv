@@ -1,0 +1,5 @@
+algorithm,d,n_samples,mec_match_mean,shd_mean,cpdag_shd_mean,runtime_sec_mean,trials,actual_steps_mean,actual_steps_min,actual_steps_max
+cd_A_noepoch,20,20000,0.2,8.8,8.2,3.0098055199254303,5,9828.0,7140,11970
+cd_A_noepoch,30,20000,0.0,20.6,19.6,10.155405500065536,5,27900.0,18600,47895
+greedy_cd_A_noepoch,20,20000,0.0,29.4,27.8,29.74886264000088,5,3532.4,1702,3990
+greedy_cd_A_noepoch,30,20000,0.0,47.0,44.8,163.12536867996678,5,6179.6,1790,8835

@@ -47,6 +47,22 @@ def _can_add_edge(adj: List[set], i: int, j: int) -> bool:
     return result
 
 
+def _can_flip_edge(adj: List[set], i: int, j: int) -> bool:
+    """Check whether replacing j -> i with i -> j preserves acyclicity.
+
+    Temporarily removes j -> i (which is assumed to currently be present) and
+    adds i -> j, runs Kahn's check, then restores the original adjacency.
+    """
+    if i == j:
+        return False
+    adj[j].discard(i)
+    adj[i].add(j)
+    result = _is_dag_kahn(adj)
+    adj[i].discard(j)
+    adj[j].add(i)
+    return result
+
+
 def _rank1_update(
     A: np.ndarray,
     A_inv: np.ndarray,
@@ -133,6 +149,39 @@ def _pair_scores(G: np.ndarray):
     return ii, jj, score_matrix[ii, jj]
 
 
+def _candidate_iter(scores: np.ndarray, mode: str):
+    """Yield candidate indices in (descending) score order.
+
+    Two strategies are supported:
+
+    * ``"sorted"`` — one ``argsort`` up front (``O(N log N)``), then iterate.
+      The original ``scores`` array is not mutated. Stops at the first
+      non-positive entry, so the caller does not need its own break check.
+    * ``"argmax"`` — repeated ``argmax`` (``O(m N)`` for m probes) on a local
+      copy of ``scores`` whose visited entries are marked ``-1``.
+
+    See `dag_greedy_A` for the cost trade-off between the two strategies.
+    """
+    if mode == "sorted":
+        order = np.argsort(scores)[::-1]
+        for idx in order.tolist():
+            if scores[idx] <= 0.0:
+                return
+            yield int(idx)
+    elif mode == "argmax":
+        work = scores.copy()
+        while True:
+            idx = int(np.argmax(work))
+            if work[idx] <= 0.0:
+                return
+            yield idx
+            work[idx] = -1.0
+    else:
+        raise ValueError(
+            f"unknown selection mode: {mode!r} (expected 'sorted' or 'argmax')"
+        )
+
+
 def _directed_coordinate_gain(
     A: np.ndarray,
     S: np.ndarray,
@@ -142,25 +191,86 @@ def _directed_coordinate_gain(
     A_inv: np.ndarray,
     G: np.ndarray,
     adj: List[set],
-) -> tuple[float, float]:
+) -> tuple[float, list]:
     """
-    Return (gain, delta_star) for the directed coordinate A[i, j].
+    Return (gain, plan) for the directed coordinate A[i, j].
 
-    gain = current objective decrease after any L0 penalty.
+    plan is a list of (row, col, delta) tuples to apply in order. There are
+    three cases depending on the current state of (i, j) in the DAG:
+
+      1. i -> j already exists: re-optimize A[i, j] in place.
+      2. j -> i exists but i -> j does not: flip the edge — first zero out
+         A[j, i], then take the 1-D optimum at A[i, j] from the post-zero
+         state. The combined two-step objective change is reported as gain.
+      3. neither direction exists: add the new edge i -> j (with L0 penalty)
+         provided the DAG constraint allows it.
+
+    gain returns the net objective decrease after the relevant L0 accounting.
+    Empty plan / -inf gain means the candidate is infeasible.
     """
     if i == j:
-        return -np.inf, 0.0
+        return -np.inf, []
 
     edge_exists = j in adj[i]
-    if not edge_exists and not _can_add_edge(adj, i, j):
-        return -np.inf, 0.0
+    reverse_exists = i in adj[j]
+
+    if edge_exists:
+        # Case 1: re-optimize an existing directed edge.
+        delta = delta_star(A, S, i, j, A_inv=A_inv)
+        alpha = float(A_inv[j, i])
+        sa_ij = (float(G[i, j]) + 2.0 * alpha) / 2.0
+        df = _incremental_df(alpha, sa_ij, float(S[i, i]), delta)
+        return -df, [(i, j, delta)]
+
+    if reverse_exists:
+        # Case 2: try to flip j -> i into i -> j.
+        if not _can_flip_edge(adj, i, j):
+            return -np.inf, []
+
+        # Step 1: zero A[j, i].
+        delta1 = -float(A[j, i])
+        alpha1 = float(A_inv[i, j])
+        denom = 1.0 + delta1 * alpha1
+        if abs(denom) < 1e-15:
+            return -np.inf, []
+        sa_ji = (float(G[j, i]) + 2.0 * alpha1) / 2.0
+        df1 = _incremental_df(alpha1, sa_ji, float(S[j, j]), delta1)
+
+        # Step 2: optimal delta for A[i, j] from the post-zero state.
+        # (S A')_{ij} == (S A)_{ij} because zeroing A[j, i] only touches the
+        # i-th column of A, not the j-th, so sa_ij is unchanged.
+        sa_ij = (float(G[i, j]) + 2.0 * float(A_inv[j, i])) / 2.0
+        # alpha_2 = (A')^{-1}[j, i] via Sherman-Morrison on the rank-1 update
+        # A' = A + delta1 * e_j e_i^T.
+        c_sm = delta1 / denom
+        alpha2 = (
+            float(A_inv[j, i])
+            - c_sm * float(A_inv[j, j]) * float(A_inv[i, i])
+        )
+        s_ii = float(S[i, i])
+
+        if abs(alpha2) < 1e-12:
+            delta2 = -sa_ij / s_ii
+        else:
+            D = (s_ii + alpha2 * sa_ij) ** 2 - 4.0 * alpha2 * s_ii * (sa_ij - alpha2)
+            D = max(D, 0.0)
+            delta2 = 2.0 * (sa_ij - alpha2) / (
+                -(s_ii + alpha2 * sa_ij) - np.sqrt(D)
+            )
+
+        df2 = _incremental_df(alpha2, sa_ij, s_ii, delta2)
+        # Edge count is unchanged (one removed, one added) so L0 cancels out.
+        return -(df1 + df2), [(j, i, delta1), (i, j, delta2)]
+
+    # Case 3: add a brand-new edge i -> j.
+    if not _can_add_edge(adj, i, j):
+        return -np.inf, []
 
     delta = delta_star(A, S, i, j, A_inv=A_inv)
     alpha = float(A_inv[j, i])
     sa_ij = (float(G[i, j]) + 2.0 * alpha) / 2.0
     df = _incremental_df(alpha, sa_ij, float(S[i, i]), delta)
-    penalty = lambda_l0 if not edge_exists else 0.0
-    return -df - penalty, delta
+    return -df - lambda_l0, [(i, j, delta)]
 
 
 def _diagonal_coordinate_gain(
@@ -293,11 +403,17 @@ def update_directed_coordinate(
     f_state: list,
     adj: List[set],
 ) -> bool:
-    """Apply one directed off-diagonal update if it has positive gain."""
-    gain, delta = _directed_coordinate_gain(A, S, i, j, lambda_l0, A_inv, G, adj)
+    """Apply one directed off-diagonal update if it has positive gain.
+
+    The plan returned by _directed_coordinate_gain may contain one step
+    (re-optimize / add) or two steps (flip: zero the reverse edge, then
+    activate the forward edge).
+    """
+    gain, plan = _directed_coordinate_gain(A, S, i, j, lambda_l0, A_inv, G, adj)
     if gain <= 0.0:
         return False
-    _apply_cached_update(A, S, i, j, delta, A_inv, G, f_state, adj)
+    for r, c, d in plan:
+        _apply_cached_update(A, S, r, c, d, A_inv, G, f_state, adj)
     return True
 
 
@@ -341,36 +457,66 @@ def _dag_greedy_A_impl(
     return_history: bool,
     A_init: Optional[np.ndarray],
     include_diagonal: bool,
+    selection: str = "sorted",
+    early_stop: bool = False,
+    tol: float = 1e-4,
+    patience: int = 10,
+    check_every: Optional[int] = None,
+    min_steps: Optional[int] = None,
+    return_graph_history: bool = False,
 ):
-    """Shared implementation for the T-step greedy variants."""
+    """Shared implementation for the T-step greedy variants.
+
+    Candidate selection inside each outer step is delegated to
+    `_candidate_iter`. ``selection='sorted'`` (default) does one upfront
+    ``argsort``; ``selection='argmax'`` does the historical repeated
+    ``argmax`` with in-place rejection. See `dag_greedy_A` for guidance.
+
+    Two early-stopping mechanisms coexist:
+
+    * Implicit (always on): break as soon as no candidate yields a positive
+      objective decrease — this is the KKT-style "nothing left to improve"
+      stop and is independent of `early_stop`.
+    * Explicit (opt in via `early_stop=True`): every `check_every` iterations,
+      compute the relative improvement against the previous checkpoint. If it
+      stays below `tol` for `patience` consecutive checks (and we have already
+      run at least `min_steps` iterations), break. This catches the
+      "improving but tiny" regime where the implicit stop would never fire.
+
+    Defaults follow `coordinate0.dag_coordinate_descent_l0`:
+    `check_every = d*(d+1)//2`, `min_steps = check_every * 10`.
+    """
     np.random.seed(seed)
     d = S.shape[0]
     A, A_inv, G, f_state, adj = _init_state(S, A_init)
 
     ii_off, jj_off = np.where(~np.eye(d, dtype=bool))
     history = []
+    graph_history_list = [] if return_graph_history else None
 
-    for _ in range(T):
+    if early_stop:
+        if check_every is None:
+            check_every = d * (d + 1) // 2
+        if min_steps is None:
+            min_steps = check_every * 10
+        prev_check_f = f_state[0]
+        no_improve_count = 0
+
+    for t in range(T):
         offdiag_scores = np.abs(G[ii_off, jj_off])
         if include_diagonal:
             diag_scores = np.abs(np.diag(G))
-            scores = np.concatenate([diag_scores, offdiag_scores]).copy()
+            scores = np.concatenate([diag_scores, offdiag_scores])
         else:
-            scores = offdiag_scores.copy()
+            scores = offdiag_scores
 
         selected = None
-        while True:
-            idx = int(np.argmax(scores))
-            score = float(scores[idx])
-            if score <= 0.0:
-                break
-
+        for idx in _candidate_iter(scores, selection):
             if include_diagonal and idx < d:
                 gain, _, _ = _diagonal_coordinate_gain(A, S, idx, A_inv, G)
                 if gain > 0.0:
                     selected = ("diag", int(idx))
                     break
-                scores[idx] = -1.0
                 continue
 
             off_idx = idx - d if include_diagonal else idx
@@ -380,7 +526,6 @@ def _dag_greedy_A_impl(
             if gain > 0.0:
                 selected = ("offdiag", i, j)
                 break
-            scores[idx] = -1.0
 
         if selected is None:
             break
@@ -392,10 +537,31 @@ def _dag_greedy_A_impl(
                 A, S, selected[1], selected[2], lambda_l0, A_inv, G, f_state, adj
             )
         history.append(f_state[0])
+        if graph_history_list is not None:
+            graph_history_list.append(weight_to_adjacency(A, threshold).astype(np.uint8))
+
+        if early_stop and (t + 1) % check_every == 0:
+            curr_f = f_state[0]
+            rel_improve = (prev_check_f - curr_f) / max(1.0, abs(prev_check_f))
+            prev_check_f = curr_f
+            if t + 1 >= min_steps:
+                if rel_improve < tol:
+                    no_improve_count += 1
+                else:
+                    no_improve_count = 0
+                if no_improve_count >= patience:
+                    break
 
     G_binary = weight_to_adjacency(A, threshold)
+    graph_history = (
+        np.array(graph_history_list, dtype=np.uint8) if graph_history_list is not None else None
+    )
+    if return_history and return_graph_history:
+        return A, G_binary, f_state[0], history, graph_history
     if return_history:
         return A, G_binary, f_state[0], history
+    if return_graph_history:
+        return A, G_binary, f_state[0], graph_history
     return A, G_binary, f_state[0]
 
 
@@ -407,12 +573,29 @@ def dag_greedy_A(
     lambda_l0: float = 0.2,
     return_history: bool = False,
     A_init: Optional[np.ndarray] = None,
+    selection: str = "sorted",
+    early_stop: bool = False,
+    tol: float = 1e-4,
+    patience: int = 10,
+    check_every: Optional[int] = None,
+    min_steps: Optional[int] = None,
+    return_graph_history: bool = False,
 ):
     """
     Main T-step greedy solver.
 
     Uses directed coordinate selection, includes diagonal updates, and stops early
-    when no coordinate yields positive objective decrease.
+    when no coordinate yields positive objective decrease (always-on implicit
+    stop). Pass `early_stop=True` to additionally enable a relative-improvement
+    early stop with `tol`/`patience`/`check_every`/`min_steps`.
+
+    `selection` controls how the inner candidate scan is ordered:
+
+    * ``"sorted"`` (default): one ``argsort`` per outer step, ``O(N log N)``
+      preprocessing then iterate. Asymptotically better when many candidates
+      get rejected per step (typical near convergence).
+    * ``"argmax"``: repeated ``argmax`` with in-place rejection,
+      ``O(m N)`` for m probes. Slightly faster when m is very small.
     """
     return _dag_greedy_A_impl(
         S=S,
@@ -423,6 +606,13 @@ def dag_greedy_A(
         return_history=return_history,
         A_init=A_init,
         include_diagonal=True,
+        selection=selection,
+        early_stop=early_stop,
+        tol=tol,
+        patience=patience,
+        check_every=check_every,
+        min_steps=min_steps,
+        return_graph_history=return_graph_history,
     )
 
 
@@ -434,12 +624,19 @@ def dag_greedy_A_directed(
     lambda_l0: float = 0.2,
     return_history: bool = False,
     A_init: Optional[np.ndarray] = None,
+    selection: str = "sorted",
+    early_stop: bool = False,
+    tol: float = 1e-4,
+    patience: int = 10,
+    check_every: Optional[int] = None,
+    min_steps: Optional[int] = None,
 ):
     """
     Directed off-diagonal-only T-step greedy solver.
 
     This is retained as a baseline for experiments that want the old
-    directed-without-diagonal behavior.
+    directed-without-diagonal behavior. Supports the same `selection` and
+    explicit early-stop parameters as `dag_greedy_A`.
     """
     return _dag_greedy_A_impl(
         S=S,
@@ -450,6 +647,12 @@ def dag_greedy_A_directed(
         return_history=return_history,
         A_init=A_init,
         include_diagonal=False,
+        selection=selection,
+        early_stop=early_stop,
+        tol=tol,
+        patience=patience,
+        check_every=check_every,
+        min_steps=min_steps,
     )
 
 
