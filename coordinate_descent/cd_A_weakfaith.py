@@ -42,7 +42,7 @@ except ImportError:
     )
 
 
-_VALID_SCREENS = ("corr", "pcorr", "glasso")
+_VALID_SCREENS = ("corr", "pcorr", "glasso", "moral_graph")
 
 
 def _normalize_screening(screening):
@@ -63,9 +63,38 @@ def _normalize_screening(screening):
     return screens
 
 
-def _screen_forbidden(S, tau, screen, glasso_alpha):
-    """Return a (d, d) bool forbidden mask for a single screening method."""
+def _screen_forbidden(S, tau, screen, glasso_alpha,
+                      X=None, moral_graph_alpha=0.01):
+    """Return a (d, d) bool forbidden mask for a single screening method.
+
+    Parameters
+    ----------
+    S, tau, screen, glasso_alpha : as before
+        For ``screen in {"corr", "pcorr", "glasso"}`` the forbidden mask is
+        ``|stat| < tau``.
+    X : (n, d) ndarray, optional
+        Raw data matrix; required when ``screen == "moral_graph"``.
+    moral_graph_alpha : float, default 0.01
+        Significance level for IAMB's Fisher-Z CI tests. Only used when
+        ``screen == "moral_graph"``. Matches CALM's default
+        (``run_experiment.py`` passes alpha=0.01).
+    """
     d = S.shape[0]
+    if screen == "moral_graph":
+        if X is None:
+            raise ValueError(
+                "screen='moral_graph' requires X (the raw n×d data matrix); "
+                "pass it as the X= keyword to dag_coordinate_descent_l0_weakfaith."
+            )
+        try:
+            from .iamb import iamb_markov_network
+        except ImportError:
+            from iamb import iamb_markov_network
+        moral, _ = iamb_markov_network(X, alpha=moral_graph_alpha)
+        # forbidden = absent in moral graph (i.e. moral_mask[i,j] == 0)
+        forbidden = ~(moral.astype(bool))
+        np.fill_diagonal(forbidden, False)
+        return forbidden
     if screen == "corr":
         std = np.sqrt(np.diag(S))
         stat = S / np.outer(std, std)
@@ -154,7 +183,8 @@ def _offdiag_count(mask):
 
 
 def faithfulness_mask_diagnostics(
-    S, tau, screening, glasso_alpha=0.01, combine="union"
+    S, tau, screening, glasso_alpha=0.01, combine="union",
+    X=None, moral_graph_alpha=0.01,
 ):
     """Return numeric diagnostics for weak-faithfulness screening masks.
 
@@ -163,6 +193,9 @@ def faithfulness_mask_diagnostics(
     the combined mask used by the algorithm. Per-screen counts and pairwise
     overlaps describe how much each individual screen removes and how much the
     removed sets agree.
+
+    ``X`` and ``moral_graph_alpha`` are only consulted when ``screening``
+    includes ``"moral_graph"``.
     """
     d = S.shape[0]
     total = d * (d - 1)
@@ -173,7 +206,9 @@ def faithfulness_mask_diagnostics(
         "mask_n_screens": int(len(screens)),
     }
 
-    if tau <= 0.0:
+    tau_based = {"corr", "pcorr", "glasso"}
+    has_moral = "moral_graph" in screens
+    if tau <= 0.0 and not has_moral:
         stats.update(
             {
                 "mask_allowed_count": int(total),
@@ -184,10 +219,19 @@ def faithfulness_mask_diagnostics(
         )
         return stats
 
+    # Skip tau-based screens when tau<=0 in the diagnostics dict too.
     forbidden_by_screen = {
-        s: _screen_forbidden(S, tau, s, glasso_alpha) for s in screens
+        s: _screen_forbidden(
+            S, tau, s, glasso_alpha,
+            X=X, moral_graph_alpha=moral_graph_alpha,
+        )
+        for s in screens
+        if s == "moral_graph" or (s in tau_based and tau > 0.0)
     }
-    forbidden_list = [forbidden_by_screen[s] for s in screens]
+    # Iterate only over screens that actually contributed (others were dropped
+    # because tau<=0 disabled them).
+    active_screens = tuple(s for s in screens if s in forbidden_by_screen)
+    forbidden_list = [forbidden_by_screen[s] for s in active_screens]
     combined = _combine_forbidden_masks(forbidden_list, combine)
 
     zero_count = _offdiag_count(combined)
@@ -212,7 +256,7 @@ def faithfulness_mask_diagnostics(
             float((total - screen_zero) / total) if total else 1.0
         )
 
-    for a, b in combinations(screens, 2):
+    for a, b in combinations(active_screens, 2):
         fa = forbidden_by_screen[a]
         fb = forbidden_by_screen[b]
         inter = _offdiag_count(fa & fb)
@@ -226,7 +270,7 @@ def faithfulness_mask_diagnostics(
             float(inter / min_zero) if min_zero else 1.0
         )
 
-    if len(screens) >= 2:
+    if len(active_screens) >= 2:
         all_inter = forbidden_list[0].copy()
         all_union = forbidden_list[0].copy()
         for fb in forbidden_list[1:]:
@@ -244,7 +288,8 @@ def faithfulness_mask_diagnostics(
 
 
 def _build_faithfulness_mask(
-    S, tau, screening, glasso_alpha=0.01, combine="union"
+    S, tau, screening, glasso_alpha=0.01, combine="union",
+    X=None, moral_graph_alpha=0.01,
 ):
     """Build the forbidden/allowed masks for one-edge faithfulness screening.
 
@@ -254,11 +299,13 @@ def _build_faithfulness_mask(
         Sample covariance matrix (or Gram matrix divided by n). Must be symmetric
         with positive diagonal.
     tau : float
-        Threshold below which |statistic| is treated as zero. tau <= 0 disables
-        screening and returns (None, d*(d-1)).
+        Threshold below which |statistic| is treated as zero. ``tau <= 0``
+        disables every tau-based screen ({"corr", "pcorr", "glasso"}); a
+        ``"moral_graph"`` screen is unaffected by ``tau`` (its threshold is
+        ``moral_graph_alpha``).
     screening : str or sequence of str
-        One or more of {"corr", "pcorr", "glasso"}. A sequence activates all
-        listed screens and combines them via ``combine``.
+        One or more of {"corr", "pcorr", "glasso", "moral_graph"}. A sequence
+        activates all listed screens and combines them via ``combine``.
     glasso_alpha : float, default 0.01
         Regularization strength passed to ``sklearn.covariance.graphical_lasso``
         when "glasso" is selected.
@@ -271,23 +318,40 @@ def _build_faithfulness_mask(
         - "intersect": an edge is forbidden if any screen marks it as zero
           (stricter pruning). Allowed set = intersection of per-screen allowed
           sets.
+    X : (n, d) ndarray, optional
+        Raw data matrix. Required only when ``"moral_graph"`` is in
+        ``screening``.
+    moral_graph_alpha : float, default 0.01
+        Fisher-Z significance level for IAMB; only used when ``"moral_graph"``
+        is in ``screening``. Matches CALM's default.
 
     Returns
     -------
     allowed_offdiag : (M, 2) ndarray or None
         Row = index pair (i, j) with i != j that survives screening.
-        None when tau <= 0.
+        None when no screen is active.
     M : int
         Number of allowed off-diagonal pairs.
     """
     d = S.shape[0]
-    if tau <= 0.0:
-        return None, d * (d - 1)
-
     screens = _normalize_screening(screening)
 
+    # Drop tau-based screens when tau <= 0 (they would block nothing); keep
+    # 'moral_graph' regardless. If nothing remains, fall back to "no screening".
+    tau_based = {"corr", "pcorr", "glasso"}
+    active_screens = tuple(
+        s for s in screens
+        if s == "moral_graph" or (s in tau_based and tau > 0.0)
+    )
+    if len(active_screens) == 0:
+        return None, d * (d - 1)
+
     forbidden_list = [
-        _screen_forbidden(S, tau, s, glasso_alpha) for s in screens
+        _screen_forbidden(
+            S, tau, s, glasso_alpha,
+            X=X, moral_graph_alpha=moral_graph_alpha,
+        )
+        for s in active_screens
     ]
 
     forbidden = _combine_forbidden_masks(forbidden_list, combine)
@@ -439,13 +503,19 @@ def dag_coordinate_descent_l0_weakfaith(
     combine="union",
     initial_gain_mask=False,
     initial_gain_eps=0.0,
+    # ★ added 2026-05: scoring + moral-graph screen
+    score="l0",
+    n_samples=None,
+    penalty_discount=1.0,
+    X=None,
+    moral_graph_alpha=0.01,
 ):
     """Random coordinate descent with one-edge faithfulness screening.
 
     Semantically equivalent to `coordinate0.dag_coordinate_descent_l0` when
-    `faithfulness_tau <= 0` and `initial_gain_mask=False`; in that regime the
-    RNG call sequence is identical, so results match byte-for-byte under the
-    same seed.
+    `faithfulness_tau <= 0`, `initial_gain_mask=False`, `score="l0"`, and
+    ``"moral_graph"`` is not in `screening`; in that regime the RNG call
+    sequence is identical, so results match byte-for-byte under the same seed.
 
     Parameters
     ----------
@@ -453,9 +523,9 @@ def dag_coordinate_descent_l0_weakfaith(
     A_init, early_stop, check_every, tol, patience, min_steps :
         Same as `coordinate0.dag_coordinate_descent_l0`.
     faithfulness_tau : float, default 0.0
-        Weak-faithfulness screening threshold. 0 disables this screen. With
-        `initial_gain_mask=False`, this reverts to the original uniform (i, j)
-        sampling.
+        Weak-faithfulness screening threshold for tau-based screens
+        ({"corr", "pcorr", "glasso"}). 0 disables them. ``"moral_graph"`` does
+        not use this threshold.
     sampling_mode : {"preserve", "pool"}, default "preserve"
         How to allocate sampling probability between diagonal and off-diagonal
         coordinates when screening is active.
@@ -465,11 +535,17 @@ def dag_coordinate_descent_l0_weakfaith(
         - "pool": uniform over {d diagonal coords} ∪ {M allowed off-diag coords}.
     screening : str or sequence of str, default "corr"
         One or more statistics used to judge "x_i and x_j are approximately
-        independent". Valid names: "corr" (marginal correlation),
-        "pcorr" (partial correlation, conditioning on all other variables),
-        "glasso" (Graphical-Lasso precision entry, normalized to the pcorr
-        scale). Pass a sequence (e.g. ["corr", "pcorr"]) to enable multiple
-        screens at once; they are merged via ``combine``.
+        independent". Valid names:
+
+        - "corr"        : marginal correlation
+        - "pcorr"       : partial correlation, conditioning on all other variables
+        - "glasso"      : Graphical-Lasso precision entry, normalized to pcorr scale
+        - "moral_graph" : IAMB Markov-network estimate (Fisher-Z CI tests),
+          identical to the moral-graph stage in CALM
+          (kaifeng-jin/CALM, ``iamb.iamb_markov_network``).
+
+        Pass a sequence (e.g. ``["pcorr", "moral_graph"]``) to enable multiple
+        screens; they are merged via ``combine``.
     glasso_alpha : float, default 0.01
         L1 regularization strength for Graphical Lasso; only used when
         "glasso" is among the selected screens.
@@ -477,20 +553,36 @@ def dag_coordinate_descent_l0_weakfaith(
         How to merge forbidden masks when multiple screens are selected.
 
         - "union": an edge is forbidden only when every screen marks it as
-          zero (allowed set = union of per-screen allowed sets). Matches the
-          rule "discard edges where corr AND pcorr are both zero".
+          zero (allowed set = union of per-screen allowed sets).
         - "intersect": an edge is forbidden if any screen marks it as zero
-          (allowed set = intersection, stricter pruning).
+          (stricter pruning, allowed set = intersection).
 
         Ignored when only one screen is selected.
     initial_gain_mask : bool, default False
         If True, run one initial scan over directed off-diagonal pairs and keep
-        only pairs whose one-direction L0 net gain is positive at the initial A
-        (after the same pair-zeroing convention used by `update_off_diagonal`).
-        A direction with ``score - lambda_l0 <= initial_gain_eps`` is never
-        considered in later updates.
+        only pairs whose one-direction L0 net gain is positive at the initial A.
     initial_gain_eps : float, default 0.0
         Numerical tolerance for `initial_gain_mask`.
+    score : {"l0", "bic"}, default "l0"
+        Per-edge penalty in the L0-style sub-objective evaluated by
+        ``update_off_diagonal``.
+
+        - "l0"  : per-edge penalty = ``lambda_l0`` (original behavior).
+        - "bic" : per-edge penalty = ``penalty_discount * log(n_samples) /
+          n_samples``. This makes the algorithm minimize a Gaussian SEM BIC
+          (since cd_A's per-sample loss ``f(A,S) = -2 log det(A) + tr(A^T S A)``
+          equals ``-2/n × log L`` up to a constant for equal-variance Gaussian
+          SEM, so adding ``log(n)/n × #edges`` per sample = ``log(n) × #edges``
+          total = the BIC penalty).
+    n_samples : int, optional
+        Sample size; required when ``score="bic"``.
+    penalty_discount : float, default 1.0
+        Multiplier on the BIC penalty (matches FGES's ``penalty_discount``).
+        Larger -> sparser. Only used when ``score="bic"``.
+    X : (n_samples, d) ndarray, optional
+        Raw data matrix; required when ``"moral_graph"`` is in ``screening``.
+    moral_graph_alpha : float, default 0.01
+        Significance level for IAMB's Fisher-Z CI tests (matches CALM).
 
     Returns
     -------
@@ -501,6 +593,24 @@ def dag_coordinate_descent_l0_weakfaith(
             f"unknown sampling_mode {sampling_mode!r} "
             f"(expected 'preserve' or 'pool')"
         )
+
+    # Resolve effective per-edge penalty from `score`.
+    if score == "l0":
+        lambda_eff = float(lambda_l0)
+    elif score == "bic":
+        if n_samples is None:
+            if X is not None:
+                n_samples = int(X.shape[0])
+            else:
+                raise ValueError(
+                    "score='bic' requires n_samples (or X, from which n_samples "
+                    "is inferred)."
+                )
+        if n_samples <= 1:
+            raise ValueError(f"n_samples must be > 1 for BIC, got {n_samples}")
+        lambda_eff = float(penalty_discount) * np.log(n_samples) / n_samples
+    else:
+        raise ValueError(f"unknown score {score!r}; expected 'l0' or 'bic'")
 
     np.random.seed(seed)
     d = S.shape[0]
@@ -516,13 +626,15 @@ def dag_coordinate_descent_l0_weakfaith(
         screening,
         glasso_alpha=glasso_alpha,
         combine=combine,
+        X=X,
+        moral_graph_alpha=moral_graph_alpha,
     )
     initial_direction_mask = None
     if initial_gain_mask:
         allowed_offdiag, M, initial_direction_mask = _build_initial_gain_mask(
             A,
             S,
-            lambda_l0,
+            lambda_eff,
             allowed_offdiag=allowed_offdiag,
             eps=initial_gain_eps,
         )
@@ -564,12 +676,12 @@ def dag_coordinate_descent_l0_weakfaith(
                 S,
                 i,
                 j,
-                lambda_l0,
+                lambda_eff,
                 A_inv=A_inv,
                 direction_mask=initial_direction_mask,
             )
         else:
-            A = update_off_diagonal(A, S, i, j, lambda_l0, A_inv=A_inv)
+            A = update_off_diagonal(A, S, i, j, lambda_eff, A_inv=A_inv)
 
         history.append(f(A, S))
         if graph_history_list is not None:

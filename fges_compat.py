@@ -51,8 +51,10 @@ class TetradSearch:
         self._Knowledge = jpype.JClass("edu.cmu.tetrad.data.Knowledge")
         self._Parameters = jpype.JClass("edu.cmu.tetrad.util.Parameters")
         self._Params = jpype.JClass("edu.cmu.tetrad.util.Params")
+        self._FisherZ = jpype.JClass("edu.cmu.tetrad.algcomparison.independence.FisherZ")
         self._SemBicScore = jpype.JClass("edu.cmu.tetrad.algcomparison.score.SemBicScore")
         self._Fges = jpype.JClass("edu.cmu.tetrad.algcomparison.algorithm.oracle.cpdag.Fges")
+        self._Pc = jpype.JClass("edu.cmu.tetrad.algcomparison.algorithm.oracle.cpdag.Pc")
 
         self.data = self._pandas_to_tetrad(df)
         self.SCORE = None
@@ -102,10 +104,27 @@ class TetradSearch:
         self.java = alg.search(self.data, self.params)
         self.bootstrap_graphs = alg.getBootstrapGraphs()
 
+    def run_pc(self, alpha=0.01, stable=True, depth=-1):
+        """
+        Run Tetrad PC with Fisher Z conditional independence tests.
+
+        This mirrors the common py-causal/Tetrad setup used in causal discovery
+        benchmarks for continuous linear-Gaussian data.
+        """
+        alg = self._Pc(self._FisherZ())
+        alg.setKnowledge(self.knowledge)
+
+        self.params.set(self._Params.ALPHA, float(alpha))
+        self.params.set(self._Params.STABLE_FAS, bool(stable))
+        self.params.set(self._Params.DEPTH, int(depth))
+
+        self.java = alg.search(self.data, self.params)
+        self.bootstrap_graphs = alg.getBootstrapGraphs()
+
     def get_graph_to_matrix(self, java=None, nullEpt=0, circleEpt=1, arrowEpt=2, tailEpt=3):
         graph = self.java if java is None else java
         if graph is None:
-            raise RuntimeError("run_fges() must be called before get_graph_to_matrix()")
+            raise RuntimeError("run_fges() or run_pc() must be called before get_graph_to_matrix()")
 
         endpoint_map = {
             "NULL": nullEpt,

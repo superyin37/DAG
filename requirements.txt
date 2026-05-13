@@ -1,0 +1,45 @@
+# Python 3.10.11 environment used by this project.
+# Keep numpy below 2 because CALM, TensorFlow 2.15, numba/xges, and several
+# causal-discovery packages are tested against the NumPy 1.x ABI.
+numpy==1.26.4
+scipy==1.15.3
+scikit-learn==1.7.2
+joblib==1.5.3
+pandas==2.3.3
+networkx==3.4.2
+
+# Plotting, notebooks, and experiment reporting.
+matplotlib==3.10.8
+seaborn==0.13.2
+ipython==8.12.3
+ipykernel==7.2.0
+tqdm==4.67.1
+requests==2.32.5
+statsmodels==0.14.6
+pytz==2026.2
+PyYAML==6.0.2
+
+# Core optimization / ML backends used by local algorithms and notebooks.
+# Required for the local CPU build suffix on torch.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.11.0+cpu
+tensorflow==2.15.1
+sympy==1.14.0
+
+# Causal discovery libraries and graph utilities.
+gcastle==1.0.4
+causal-learn==0.1.4.5
+causaldag==0.1a163
+igraph==1.0.0
+xges==0.1.6
+optuna==4.8.0
+pydot==4.0.1
+graphviz==0.21
+
+# FGES / Tetrad bridge used by fges_compat.py.
+JPype1==1.6.0
+py-tetrad @ git+https://github.com/cmu-phil/py-tetrad@00e200e92425854a979853ac21d9c8885398369a
+
+# CDT/toolbox optional dependencies retained from the original requirements.
+GPUtil>=1.4.0
+skrebate>=0.6
