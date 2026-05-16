@@ -1,0 +1,8 @@
+graph_label,algorithm,SHD of CPDAG,Precision of Skeleton,Recall of Skeleton,SHD
+50-node ER1,CALM,15.0 ± 0.0,0.84 ± 0.00,0.87 ± 0.00,16.0 ± 0.0
+50-node ER1,GOLEM-NV-l1,35.0 ± 0.0,0.47 ± 0.00,0.27 ± 0.00,39.0 ± 0.0
+50-node ER1,NOTEARS,10.0 ± 0.0,0.90 ± 0.00,0.93 ± 0.00,5.0 ± 0.0
+50-node ER1,PC,7.0 ± 0.0,0.93 ± 0.00,0.90 ± 0.00,-
+50-node ER1,FGES,7.0 ± 0.0,0.94 ± 0.00,1.00 ± 0.00,-
+50-node ER1,cd_A,19.0 ± 0.0,0.75 ± 0.00,0.80 ± 0.00,20.0 ± 0.0
+50-node ER1,cd_A_weakfaith,13.0 ± 0.0,0.87 ± 0.00,0.90 ± 0.00,9.0 ± 0.0

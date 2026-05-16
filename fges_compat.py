@@ -1,3 +1,4 @@
+import importlib.util
 import os
 from pathlib import Path
 
@@ -6,7 +7,12 @@ import numpy as np
 import pandas as pd
 
 
-_JDK_CANDIDATE = r"C:\Program Files\Microsoft\jdk-21.0.10.7-hotspot"
+_JDK_CANDIDATES = [
+    # Portable JRE bundled in this repo (Linux, Java 21)
+    Path(__file__).parent / "external" / "jre21" / "jdk-21.0.11+10-jre",
+    # Windows fallback
+    Path(r"C:\Program Files\Microsoft\jdk-21.0.10.7-hotspot"),
+]
 _JAR_CANDIDATES = [
     Path.home() / "AppData" / "Roaming" / "Python" / "Python310" / "site-packages" / "pytetrad" / "resources" / "tetrad-current.jar",
 ]
@@ -15,14 +21,23 @@ _JAR_CANDIDATES = [
 def _ensure_java_home():
     if os.environ.get("JAVA_HOME"):
         return
-    if os.path.isdir(_JDK_CANDIDATE):
-        os.environ["JAVA_HOME"] = _JDK_CANDIDATE
+    for candidate in _JDK_CANDIDATES:
+        if candidate.is_dir():
+            os.environ["JAVA_HOME"] = str(candidate)
+            break
 
 
 def _find_tetrad_jar() -> str:
+    # Try static candidates first (Windows paths etc.)
     for candidate in _JAR_CANDIDATES:
         if candidate.is_file():
             return str(candidate)
+    # Dynamically locate pytetrad package regardless of Python version or venv
+    spec = importlib.util.find_spec("pytetrad")
+    if spec is not None and spec.origin is not None:
+        jar = Path(spec.origin).parent / "resources" / "tetrad-current.jar"
+        if jar.is_file():
+            return str(jar)
     raise FileNotFoundError("tetrad-current.jar not found in the expected py-tetrad location")
 
 

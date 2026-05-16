@@ -1,0 +1,11 @@
+[NbConvertApp] Converting notebook /home/yin/DAG/experiments/notebooks/test/2026-05-15/test_fges_scaling.ipynb to notebook
+/home/yin/DAG/.venv/lib/python3.10/site-packages/nbformat/__init__.py:96: MissingIDFieldWarning: Cell is missing an id field, this will become a hard error in future nbformat versions. You may want to use `normalize()` on your notebooks before validations (available since nbformat 5.1.4). Previous versions of nbformat are fixing this issue transparently, and will stop doing so in the future.
+  validate(nb)
+May 15, 2026 1:06:11 PM java.util.prefs.FileSystemPreferences$6 run
+WARNING: Prefs file removed in background /home/yin/.java/.userPrefs/prefs.xml
+Num edges added: 1000
+Num edges added: 1000
+Num edges (backwards) = 1000
+Num edges added: 1000
+Num edges added: 1000
+[NbConvertApp] Writing 170234 bytes to /home/yin/DAG/experiments/notebooks/test/2026-05-15/test_fges_scaling_out.ipynb

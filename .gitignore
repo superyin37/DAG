@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 .vscode/
+.keras/
+.pip-cache/
+external/CALM/
+external/jre21/
+get-pip.py

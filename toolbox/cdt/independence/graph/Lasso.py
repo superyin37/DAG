@@ -27,7 +27,10 @@ Date: 1/06/17
 
 """
 import networkx as nx
-from sklearn.covariance import GraphLasso
+try:
+    from sklearn.covariance import GraphicalLasso as GraphLasso
+except ImportError:  # pragma: no cover - compatibility with older scikit-learn
+    from sklearn.covariance import GraphLasso
 from .model import GraphSkeletonModel, FeatureSelectionModel
 from .HSICLasso import hsiclasso
 import numpy as np
