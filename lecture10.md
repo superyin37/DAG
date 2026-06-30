@@ -3,14 +3,16 @@
 
 My research focuses on large-scale causal graph discovery under a linear Gaussian structural equation model. In this setting, a causal structure is usually represented as a weighted adjacency matrix, and the learning problem is formulated as an optimization problem over this matrix. For example, the objective can be written as
 
+
 $$
+
 f(A)
 =
 -2\log\det(A)
 +
 \mathrm{tr}(A^\top S A)
 +
-\lambda_0\|A\|_0,
+\lambda_0\|A\|_0
 $$
 
 where $S$ is the sample covariance matrix, $A$ is the optimization variable, and the $L_0$ term encourages sparsity. In addition, a DAG constraint is imposed so that the learned graph has no directed cycles.
